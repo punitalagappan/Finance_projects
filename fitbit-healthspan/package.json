@@ -1,0 +1,13 @@
+{
+  "name": "fitbit-healthspan",
+  "version": "1.0.0",
+  "description": "WHOOP-style Recovery, Strain, Sleep, Stress and biological age (Healthspan) for Fitbit / Google Health data",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "license": "MIT"
+}
