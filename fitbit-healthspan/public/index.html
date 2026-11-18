@@ -4,35 +4,49 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0b0d10" />
-  <title>Healthspan for Fitbit</title>
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="format-detection" content="telephone=no" />
+  <title>Vitalspan</title>
   <link rel="icon" href="icon.svg" type="image/svg+xml" />
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><img src="icon.svg" alt="" width="26" height="26" /> <span>Healthspan</span></div>
+    <div class="brand"><img src="icon.svg" alt="" width="26" height="26" /> <span id="brand-name">Vitalspan</span></div>
     <div class="datepick" id="datepick" hidden>
       <button class="icon-btn" data-action="prev-day" aria-label="Previous day">‹</button>
       <span id="current-date"></span>
       <button class="icon-btn" data-action="next-day" aria-label="Next day">›</button>
     </div>
-    <button class="icon-btn" data-action="open-settings" aria-label="Settings and data">⚙</button>
+    <div class="top-actions">
+      <button class="icon-btn" id="sync-btn" data-action="sync" aria-label="Sync now" hidden>↻</button>
+      <button class="icon-btn" data-action="open-settings" aria-label="Settings and data">⚙</button>
+    </div>
   </header>
 
   <nav class="tabs" id="tabs" hidden>
     <button data-tab="today" class="active">Today</button>
-    <button data-tab="healthspan">Healthspan</button>
+    <button data-tab="healthspan">Body Age</button>
     <button data-tab="sleep">Sleep</button>
     <button data-tab="strain">Strain</button>
     <button data-tab="stress">Stress</button>
     <button data-tab="health">Health</button>
     <button data-tab="trends">Trends</button>
     <button data-tab="journal">Journal</button>
-    <button data-tab="devices">Fitbit vs WHOOP</button>
+    <button data-tab="devices">Your tracker</button>
   </nav>
 
   <main id="view" aria-live="polite"></main>
+
+  <nav class="tabbar" id="tabbar" hidden aria-label="Main">
+    <button data-tab="today"><span class="ti"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8.5" opacity=".35"/><path d="M12 3.5a8.5 8.5 0 0 1 8.2 10.8"/></svg></span>Today</button>
+    <button data-tab="healthspan"><span class="ti"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12M6 21h12M7 3c0 5 10 5 10 9s-10 4-10 9M17 3c0 5-10 5-10 9"/></svg></span>Body Age</button>
+    <button data-tab="sleep"><span class="ti"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg></span>Sleep</button>
+    <button data-tab="strain"><span class="ti"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z"/></svg></span>Strain</button>
+    <button data-tab="more"><span class="ti"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></span>More</button>
+  </nav>
 
   <dialog id="settings">
     <form method="dialog" class="settings-form" id="settings-form"></form>

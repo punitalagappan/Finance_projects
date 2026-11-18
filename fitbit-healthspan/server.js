@@ -5,12 +5,11 @@ import http from 'node:http';
 import fs from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import * as gh from './lib/googleHealth.js';
+import * as gh from './public/lib/googleHealth.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
-const PUBLIC = path.join(ROOT, 'public');
+const PUBLIC = path.join(ROOT, 'www'); // built by `npm run build`
 const DATA = path.join(ROOT, '.data');
 const TOKENS = path.join(DATA, 'tokens.json');
 
@@ -80,10 +79,10 @@ async function serveStatic(req, res, pathname) {
 const routes = {
   'GET /api/config': () => ({ googleConfigured: configured, connected: Boolean(tokens), redirectUri: REDIRECT_URI }),
 
-  'GET /auth/login': (req, res) => {
+  'GET /auth/login': async (req, res) => {
     if (!configured) return send(res, 400, 'Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env first (see README).');
-    const state = crypto.randomBytes(16).toString('hex');
-    const { verifier, challenge } = gh.pkcePair();
+    const state = gh.randomString(16);
+    const { verifier, challenge } = await gh.pkcePair();
     pending.set(state, verifier);
     setTimeout(() => pending.delete(state), 10 * 60 * 1000).unref();
     res.writeHead(302, { location: gh.authUrl({ clientId: CLIENT_ID, redirectUri: REDIRECT_URI, state, challenge }) });
@@ -112,7 +111,7 @@ const routes = {
   },
 
   'POST /auth/logout': async () => {
-    if (tokens?.access_token) fetch(`https://oauth2.googleapis.com/revoke?token=${tokens.access_token}`, { method: 'POST' }).catch(() => {});
+    if (tokens?.access_token) gh.revoke(tokens.access_token);
     tokens = null;
     await fs.rm(TOKENS, { force: true });
     return { ok: true };

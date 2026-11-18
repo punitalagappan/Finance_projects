@@ -1,6 +1,6 @@
 {
-  "name": "Healthspan for Fitbit",
-  "short_name": "Healthspan",
+  "name": "Vitalspan",
+  "short_name": "Vitalspan",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0b0d10",

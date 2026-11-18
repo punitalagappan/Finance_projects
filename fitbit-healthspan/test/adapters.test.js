@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { importFiles } from '../public/adapters/takeout.js';
-import { syncDays, localTime, pointDate } from '../lib/googleHealth.js';
+import { syncDays, localTime, pointDate } from '../public/lib/googleHealth.js';
 import { analyze } from '../public/engine/index.js';
 
 const file = (name, data) => ({ name, text: async () => (typeof data === 'string' ? data : JSON.stringify(data)) });
@@ -100,4 +100,13 @@ test('Google Health sync normalises documented payload shapes', async () => {
   assert.equal(d.workouts[0].durationMin, 50);
   assert.equal(d.bodyFatPct, 18.5);
   assert.equal(d.hrMinutes[750], 88);
+});
+
+test('PKCE pair uses WebCrypto (S256) and URL-safe characters', async () => {
+  const { pkcePair } = await import('../public/lib/googleHealth.js');
+  const { verifier, challenge } = await pkcePair();
+  assert.match(verifier, /^[A-Za-z0-9_-]{43,128}$/);
+  assert.match(challenge, /^[A-Za-z0-9_-]{43}$/);
+  const { createHash } = await import('node:crypto');
+  assert.equal(challenge, createHash('sha256').update(verifier).digest('base64url'));
 });

@@ -1,0 +1,16 @@
+{
+  "appId": "com.vitalspan.app",
+  "appName": "Vitalspan",
+  "webDir": "www",
+  "backgroundColor": "#0b0d10",
+  "ios": {
+    "contentInset": "never",
+    "scheme": "Vitalspan",
+    "limitsNavigationsToAppBoundDomains": false
+  },
+  "plugins": {
+    "CapacitorHttp": { "enabled": true },
+    "SplashScreen": { "launchAutoHide": false, "backgroundColor": "#0b0d10", "showSpinner": false },
+    "LocalNotifications": { "iconColor": "#2bd47d" }
+  }
+}

@@ -2,3 +2,7 @@ node_modules/
 .env
 .data/
 *.healthspan.json
+www/
+ios/App/App/public/
+ios/App/Pods/
+ios/DerivedData/

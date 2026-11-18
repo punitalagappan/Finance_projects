@@ -1,24 +1,26 @@
-# Healthspan for Fitbit
+# Vitalspan: Recovery, Strain & Body Age for Fitbit
 
-WHOOP-style coaching for Fitbit data: **Recovery, Strain, Sleep, Stress, Health Monitor, Journal** and a research-based **Body Age with Pace of Aging**, modelled on WHOOP Age from WHOOP's 2025 Healthspan white paper.
+An iPhone app (and web app) that turns Fitbit / Pixel Watch data into daily **Recovery, Strain, Sleep Need, Stress, Health Monitor, Journal** and a research-based **Body Age with Pace of Aging**. Everything runs on the device: no account, no backend, no tracking.
 
-There are no dependencies. You need Node ≥ 18 and a browser. Your data stays on your machine.
+> 📱 **Shipping to the App Store:** see [`RELEASE.md`](RELEASE.md). The iOS project (`ios/`), icon, screenshots, listing text, privacy policy and review notes (`store/`) are ready. What's left is signing in Xcode and Google's OAuth verification.
 
-> ⚠️ **The Fitbit Web API was switched off on 2 Nov 2026.** This app uses its successor, the **Google Health API v4** (`health.googleapis.com`). If you don't want to set up Google Cloud, you can import a Fitbit / Google Takeout export instead.
+> ⚠️ **The Fitbit Web API was switched off on 2 Nov 2026.** Vitalspan uses its successor, the **Google Health API v4**. On iPhone, sign-in and sync happen directly between the phone and Google (installed-app OAuth with PKCE, tokens in the Keychain). The optional `server.js` serves the web build.
 
 The research behind every formula is in two reports:
-- [`../reports/Fitbit WHOOP style biological age.md`](../reports/Fitbit%20WHOOP%20style%20biological%20age.md): how WHOOP's scores and WHOOP Age work.
-- [`../reports/Fitbit vs WHOOP tracker differences.md`](../reports/Fitbit%20vs%20WHOOP%20tracker%20differences.md): sensors, measurement methods, accuracy studies and score definitions for Fitbit/Pixel Watch vs WHOOP, plus the Fitbit adaptation rules this app implements.
+- [`../reports/Fitbit WHOOP style biological age.md`](../reports/Fitbit%20WHOOP%20style%20biological%20age.md): how the reference scores and effective-age method work.
+- [`../reports/Fitbit vs WHOOP tracker differences.md`](../reports/Fitbit%20vs%20WHOOP%20tracker%20differences.md): sensors, measurement methods, accuracy and the Fitbit adaptation rules this app implements.
 
 ## Quick start
 
 ```bash
 cd fitbit-healthspan
-npm start            # → http://localhost:8787
-npm test             # 22 tests: the report's acceptance checks plus the Fitbit adaptation rules
+npm ci
+npm test             # 27 tests: scoring acceptance checks, Fitbit adaptation rules, App Store limits
+npm start            # builds www/ and serves the web version at http://localhost:8787
+npm run ios:sync && npm run ios:open   # iPhone app in Xcode (macOS)
 ```
 
-Click **Load demo** to explore 210 days of realistic synthetic data. The demo person catches a cold six weeks in, drinks on some weekends and gets fitter over time.
+On first launch, onboarding asks for your consent, profile and tracker, then offers **Connect**, **Import** or **Try demo**. The demo has 210 days of realistic data, including a cold and some late nights.
 
 ## Three ways to get your data in
 
@@ -129,8 +131,13 @@ Each formula below is tagged **[OFFICIAL]** (WHOOP published it), **[LIT]** (tak
 ## Project layout
 
 ```
-server.js               zero-dependency HTTP server: static files, OAuth (PKCE), /api/sync, /api/raw
-lib/googleHealth.js     Google Health API v4 client + tolerant parser → normalised days
+public/app.config.js    app name, bundle ID, version, Google iOS client ID (one place to rebrand)
+public/platform.js      native (Capacitor) vs web: Google sign-in, Keychain, sync, notifications, haptics
+public/lib/googleHealth.js  Google Health API v4 client + tolerant parser (WebCrypto PKCE; runs on iPhone and Node)
+ios/                    Xcode project (Capacitor 8, Swift Package Manager)
+scripts/                build (esbuild → www/), configure-ios, store-assets, flatten
+store/                  App Store listing, review notes, icon, screenshots
+server.js               optional web server: static www/, OAuth for the web build, /api/sync, /api/raw
 public/engine/          scoring engine (pure ES modules, shared by browser and tests)
   healthspan.js  recovery.js  strain.js  sleep.js  stress.js  monitor.js  journal.js  zones.js  index.js
   devices.js     per-device capability profiles, tiers, Fitbit↔WHOOP score map, adaptation notes

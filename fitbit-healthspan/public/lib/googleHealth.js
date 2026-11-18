@@ -5,7 +5,6 @@
 // Response parsing is deliberately tolerant (recursive field lookup) because several field paths are only
 // documented by example; use GET /api/raw?type=<data-type> to inspect raw payloads for your account.
 
-import crypto from 'node:crypto';
 
 export const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 export const TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -22,10 +21,17 @@ export const SCOPES = [
 
 // ---------------- OAuth (Authorization Code + PKCE, confidential web-server client) ----------------
 
-export function pkcePair() {
-  const verifier = crypto.randomBytes(48).toString('base64url');
-  const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
-  return { verifier, challenge };
+// Works in browsers, iOS WKWebView (Capacitor) and Node ≥ 18 — WebCrypto only, no Node built-ins.
+const b64url = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+export function randomString(bytes = 32) {
+  return b64url(globalThis.crypto.getRandomValues(new Uint8Array(bytes)));
+}
+
+export async function pkcePair() {
+  const verifier = randomString(48);
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  return { verifier, challenge: b64url(digest) };
 }
 
 export function authUrl({ clientId, redirectUri, state, challenge }) {
@@ -48,18 +54,27 @@ async function tokenRequest(body) {
   const res = await fetch(TOKEN_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams(body),
+    body: new URLSearchParams(body).toString(), // plain string: safest with Capacitor's native HTTP bridge
   });
   const json = await res.json();
   if (!res.ok) throw new Error(`token endpoint ${res.status}: ${json.error_description || json.error}`);
   return { ...json, obtained_at: Date.now() };
 }
 
+const withSecret = (body, secret) => (secret ? { ...body, client_secret: secret } : body);
+
+/** Installed-app (iOS) clients have no secret; web-server clients pass one. */
 export const exchangeCode = ({ clientId, clientSecret, redirectUri, code, verifier }) =>
-  tokenRequest({ client_id: clientId, client_secret: clientSecret, redirect_uri: redirectUri, code, code_verifier: verifier, grant_type: 'authorization_code' });
+  tokenRequest(withSecret({ client_id: clientId, redirect_uri: redirectUri, code, code_verifier: verifier, grant_type: 'authorization_code' }, clientSecret));
+
+export async function revoke(token) {
+  try {
+    await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(token)}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' } });
+  } catch { /* best effort */ }
+}
 
 export async function refresh({ clientId, clientSecret, tokens }) {
-  const t = await tokenRequest({ client_id: clientId, client_secret: clientSecret, refresh_token: tokens.refresh_token, grant_type: 'refresh_token' });
+  const t = await tokenRequest(withSecret({ client_id: clientId, refresh_token: tokens.refresh_token, grant_type: 'refresh_token' }, clientSecret));
   return { ...tokens, ...t, refresh_token: t.refresh_token || tokens.refresh_token };
 }
 

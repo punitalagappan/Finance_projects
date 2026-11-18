@@ -7,17 +7,20 @@ import { ring, gauge, timeChart, rangeBar } from './ui/charts.js';
 import { idbGet, idbSet, idbDel, lsGet, lsSet } from './ui/store.js';
 import { generateDemo } from './adapters/demo.js';
 import { importFiles } from './adapters/takeout.js';
+import { APP } from './app.config.js';
+import * as platform from './platform.js';
 
 // ---------------------------------------------------------------- state
 const state = {
   dataset: null, // { days, profile, source, syncedAt }
-  settings: lsGet('settings', { age: null, sex: null, maxHr: null, bodyFatPct: null, wakeTime: '07:00' }),
+  settings: lsGet('settings', { age: null, sex: null, maxHr: null, bodyFatPct: null, wakeTime: '07:00', reminders: false, onboarded: false }),
+  onboardStep: 0,
   journal: lsGet('journal', {}),
   analysis: null,
   idx: 0,
   tab: 'today',
   trendRange: 30,
-  config: { googleConfigured: false, connected: false },
+  config: { available: false, connected: false },
   busy: null,
   cache: new Map(),
 };
@@ -77,6 +80,7 @@ async function setDataset(ds, { persist = true } = {}) {
   recompute(false);
   if (persist) await idbSet('dataset', ds);
   render();
+  updateReminders();
 }
 
 async function loadDemo() {
@@ -85,28 +89,44 @@ async function loadDemo() {
   toast('Demo data loaded: 210 days for a 34-year-old');
 }
 
-async function syncGoogle() {
-  state.busy = 'Syncing from Google Health… (first sync can take a minute or two)';
-  render();
+async function syncGoogle({ quiet = false } = {}) {
+  if (!quiet) { state.busy = 'Syncing from Google Health… (the first sync can take a minute or two)'; render(); }
   try {
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const res = await fetch(`/api/sync?days=200&tz=${encodeURIComponent(tz)}`);
-    const json = await res.json();
-    if (res.status === 401) {
-      state.config.connected = false;
-      throw new Error(json.error || 'Please reconnect Google Health');
-    }
-    if (!res.ok) throw new Error(json.error || res.statusText);
+    const json = await platform.sync({ days: 200, onStep: (s) => { const b = $('#busy-msg'); if (b) b.textContent = `Syncing ${s}…`; } });
     if (!json.days.length) throw new Error(`No data returned. ${json.warnings.join('; ')}`);
     if (state.dataset?.source === 'demo') { state.journal = {}; lsSet('journal', {}); }
     await setDataset({ days: json.days, profile: json.profile, source: 'google', syncedAt: new Date().toISOString(), warnings: json.warnings });
-    toast(json.warnings.length ? `Synced ${json.days.length} days (${json.warnings.length} data types unavailable)` : `Synced ${json.days.length} days`);
+    if (!quiet) toast(json.warnings.length ? `Synced ${json.days.length} days (${json.warnings.length} data types unavailable)` : `Synced ${json.days.length} days`);
   } catch (e) {
+    if (e.status === 401) state.config.connected = false;
     toast(`Sync failed: ${e.message}`, 7000);
   } finally {
     state.busy = null;
     render();
   }
+}
+
+async function connectGoogle() {
+  try {
+    platform.tap();
+    await platform.connect();
+    state.config.connected = true;
+    await syncGoogle();
+  } catch (e) {
+    toast(e.message === 'account_not_linked'
+      ? "Your Fitbit account isn't linked to Google Health yet. Open the Google Health app, sign in and finish the move, then try again."
+      : `Google sign-in failed: ${e.message}`, 9000);
+  }
+}
+
+const isStale = () => !state.dataset?.syncedAt || Date.now() - new Date(state.dataset.syncedAt) > 60 * 60 * 1000;
+
+async function updateReminders() {
+  const a = state.analysis;
+  if (!a) return;
+  const wake = state.settings.wakeTime || '07:00';
+  const bed = bedtimeFor(a.tonight.totalMin, wake, a.tonight.typicalEfficiency);
+  await platform.scheduleReminders({ enabled: Boolean(state.settings.reminders), bedtime: bed.bedtime, wakeTime: wake, needText: fmtH(a.tonight.totalMin) });
 }
 
 async function importFromFiles(files) {
@@ -162,18 +182,22 @@ function ctx() {
 function render() {
   const has = Boolean(state.analysis);
   $('#tabs').hidden = !has;
-  $('#datepick').hidden = !has;
+  $('#tabbar').hidden = !has;
+  $('#datepick').hidden = !has || ['more', 'devices'].includes(state.tab);
+  $('#sync-btn').hidden = !(has && state.config.connected);
+  const MORE = ['stress', 'health', 'trends', 'journal', 'devices', 'more'];
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === state.tab));
+  document.querySelectorAll('#tabbar button').forEach((b) => b.classList.toggle('active', b.dataset.tab === state.tab || (b.dataset.tab === 'more' && MORE.includes(state.tab))));
   if (state.busy) {
     view.innerHTML = `<div class="empty"><p><span class="spinner"></span> <span id="busy-msg">${esc(state.busy)}</span></p></div>`;
     return;
   }
-  if (!has) { view.innerHTML = renderWelcome(); return; }
+  if (!has) { view.innerHTML = state.settings.onboarded ? renderWelcome() : renderOnboarding(); return; }
   const c = ctx();
   $('#current-date').textContent = c.isLatest ? `Today · ${fmtDate(c.day.date, { month: 'short', day: 'numeric' })}` : fmtDate(c.day.date);
   document.querySelector('[data-action="next-day"]').disabled = c.isLatest;
   document.querySelector('[data-action="prev-day"]').disabled = c.i === 0;
-  const tabs = { today: renderToday, healthspan: renderHealthspan, sleep: renderSleep, strain: renderStrain, stress: renderStress, health: renderHealth, trends: renderTrends, journal: renderJournal, devices: renderDevices };
+  const tabs = { today: renderToday, healthspan: renderHealthspan, sleep: renderSleep, strain: renderStrain, stress: renderStress, health: renderHealth, trends: renderTrends, journal: renderJournal, devices: renderDevices, more: renderMore };
   view.innerHTML = tabs[state.tab](c) + sourceFooter();
 }
 
@@ -181,25 +205,102 @@ function sourceFooter() {
   const ds = state.dataset;
   const label = { demo: 'Demo data', google: 'Google Health API', import: 'Imported export' }[ds.source] || ds.source;
   return `<p class="note">Source: ${esc(label)} · ${ds.days.length} days · updated ${new Date(ds.syncedAt).toLocaleString()}.
-    Scores are WHOOP-<em>style</em> estimates built from published research. They are not WHOOP's proprietary algorithms and not medical advice.</p>`;
+    ${esc(APP.name)} scores are wellness estimates built from published research. They are not a medical device and not medical advice. <a href="${APP.privacyUrl}">Privacy</a></p>`;
+}
+
+function connectCard() {
+  const g = state.config;
+  const action = g.available
+    ? (g.connected ? '<button class="btn primary" data-action="sync">Sync now</button>' : '<button class="btn primary" data-action="connect">Connect</button>')
+    : '<button class="btn" disabled>Unavailable</button>';
+  return `<div class="card"><div><strong>Connect Fitbit (Google Health)</strong><div class="tip">Sign in with the Google account your Fitbit or Pixel Watch uses. Data goes straight from Google to this ${platform.isNative ? 'phone' : 'computer'}; we never see it.
+    ${g.available ? '' : platform.isNative ? 'Google sign-in is not enabled in this build.' : 'Needs a Google Cloud OAuth client in <code>.env</code> (see README).'}</div></div>${action}</div>`;
 }
 
 function renderWelcome() {
-  const g = state.config;
   return `<div class="empty">
     <img src="icon.svg" width="56" height="56" alt="" />
-    <h1>Healthspan for Fitbit</h1>
-    <p>Recovery, Strain, Sleep, Stress and a research-based <strong>Body Age</strong> with Pace of Aging, all calculated from your Fitbit data.</p>
+    <h1>${esc(APP.name)}</h1>
+    <p>${esc(APP.tagline)}</p>
     <div class="choice">
-      <div class="card"><div><strong>Connect Google Health</strong><div class="tip">Live sync from your Fitbit via the Google Health API, which replaced the Fitbit Web API in November 2026.
-        ${g.googleConfigured ? '' : 'Needs a Google Cloud OAuth client in <code>.env</code> first (see README).'}</div></div>
-        ${g.googleConfigured ? (g.connected ? '<button class="btn primary" data-action="sync">Sync now</button>' : '<a class="btn primary" href="/auth/login">Connect</a>') : '<button class="btn" disabled>Connect</button>'}</div>
-      <div class="card"><div><strong>Import a Fitbit / Takeout export</strong><div class="tip">Choose the unzipped export folder (or the JSON/CSV files). Everything is processed in your browser.</div></div>
-        <label class="btn">Choose folder<input type="file" id="import-dir" webkitdirectory multiple hidden /></label></div>
-      <div class="card"><div><strong>Explore with demo data</strong><div class="tip">210 days of realistic synthetic data, including a cold and a few late nights.</div></div>
-        <button class="btn" data-action="demo">Load demo</button></div>
+      ${connectCard()}
+      <div class="card"><div><strong>Import a Fitbit export</strong><div class="tip">Choose the unzipped Google Takeout / Fitbit export ${platform.isNative ? 'files' : 'folder'}. Everything is processed on this device.</div></div>
+        <label class="btn">Choose<input type="file" id="import-dir" ${platform.isNative ? '' : 'webkitdirectory'} multiple hidden /></label></div>
+      <div class="card"><div><strong>Explore with demo data</strong><div class="tip">210 days of realistic sample data, including a cold and a few late nights.</div></div>
+        <button class="btn" data-action="demo">Try demo</button></div>
     </div>
   </div>`;
+}
+
+function renderOnboarding() {
+  const s = state.settings;
+  const step = state.onboardStep;
+  const dots = `<div class="dots">${[0, 1, 2, 3].map((i) => `<span class="${i === step ? 'on' : ''}"></span>`).join('')}</div>`;
+  if (step === 0) {
+    return `<div class="onboard">
+      <img src="icon.svg" width="72" height="72" alt="" />
+      <h1>${esc(APP.name)}</h1>
+      <p class="lead">${esc(APP.tagline)}</p>
+      <ul class="features">
+        <li><b class="c-green">Recovery</b> How ready your body is each morning, from HRV, resting heart rate, breathing and sleep.</li>
+        <li><b class="c-strain">Strain</b> Daily cardiovascular load on a 0–21 scale, with a target for today.</li>
+        <li><b class="c-sleep">Sleep</b> Your personal sleep need, performance, consistency and a bedtime planner.</li>
+        <li><b class="c-age">Body Age</b> A research-based biological age and your Pace of Aging.</li>
+      </ul>
+      ${dots}<button class="btn primary wide" data-action="onboard-next">Get started</button></div>`;
+  }
+  if (step === 1) {
+    return `<div class="onboard">
+      <h1>Before you start</h1>
+      <div class="card stack" style="text-align:left">
+        <p><b>Wellness, not medicine.</b> ${esc(APP.name)} is not a medical device. It does not diagnose, treat or prevent any disease. Scores are estimates from consumer wearable data and published research, and can be wrong. Talk to a doctor about any health concern.</p>
+        <p><b>Your data stays yours.</b> Health data goes directly from Google to this device and is processed here. No account, no ads, no tracking. Our servers never receive it.</p>
+        <p><b>Not affiliated.</b> ${esc(APP.name)} is an independent app. It is not made or endorsed by Google, Fitbit or any wearable maker.</p>
+        <label class="checkline"><input type="checkbox" id="consent" ${s.consent ? 'checked' : ''}/> I understand and agree to the <a href="${APP.termsUrl}">Terms</a> and <a href="${APP.privacyUrl}">Privacy Policy</a>.</label>
+      </div>
+      ${dots}<button class="btn primary wide" data-action="onboard-next" id="consent-next" ${s.consent ? '' : 'disabled'}>Continue</button></div>`;
+  }
+  if (step === 2) {
+    return `<div class="onboard">
+      <h1>About you</h1>
+      <p class="tip">Used only on this device to personalise heart-rate zones and Body Age targets.</p>
+      <form class="card settings-form" id="onboard-form" style="text-align:left">
+        <div class="two">
+          <label>Age<input type="number" name="age" min="16" max="100" required value="${esc(s.age ?? '')}"/></label>
+          <label>Biological sex<select name="sex" required><option value="">Select</option><option value="female" ${s.sex === 'female' ? 'selected' : ''}>Female</option><option value="male" ${s.sex === 'male' ? 'selected' : ''}>Male</option></select></label>
+          <label>Your tracker<select name="device">${Object.entries(DEVICES).map(([id, d]) => `<option value="${id}" ${(s.device || 'charge-6') === id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select></label>
+          <label>Usual wake time<input type="time" name="wakeTime" value="${esc(s.wakeTime || '07:00')}"/></label>
+        </div>
+        ${platform.isNative ? `<label class="checkline"><input type="checkbox" name="reminders" ${s.reminders ? 'checked' : ''}/> Remind me to wind down before bed and when Recovery is ready</label>` : ''}
+      </form>
+      ${dots}<button class="btn primary wide" data-action="onboard-profile">Continue</button></div>`;
+  }
+  return `<div class="onboard">
+    <h1>Add your data</h1>
+    <div class="choice">
+      ${connectCard()}
+      <div class="card"><div><strong>Import a Fitbit export</strong><div class="tip">Google Takeout / Fitbit export files, processed on-device.</div></div>
+        <label class="btn">Choose<input type="file" id="import-dir" ${platform.isNative ? '' : 'webkitdirectory'} multiple hidden /></label></div>
+      <div class="card"><div><strong>Try the demo first</strong><div class="tip">Explore every screen with sample data. You can connect later in Settings.</div></div>
+        <button class="btn" data-action="demo">Try demo</button></div>
+    </div>
+    ${dots}<p class="tip">Before connecting: open the Google Health app once and make sure your Fitbit account has moved to your Google account.</p></div>`;
+}
+
+function renderMore() {
+  const item = (tab, title, sub, color = '') => `<button class="more-item" data-tab="${tab}"><span><b class="${color}">${title}</b><span class="tip">${sub}</span></span><span class="chev">›</span></button>`;
+  return `<div class="card more">
+    ${item('stress', 'Stress', 'Live 0–3 stress from heart rate vs your baseline', 'c-stress')}
+    ${item('health', 'Health Monitor', 'Overnight vitals vs your normal range', 'c-green')}
+    ${item('trends', 'Trends', '30/90/180-day charts for every metric', 'c-strain')}
+    ${item('journal', 'Journal', 'Log habits and see what moves your recovery', 'c-sleep')}
+    ${item('devices', 'Your tracker', 'Sensors, accuracy and how your data is adapted', 'c-age')}
+    <button class="more-item" data-action="open-settings"><span><b>Settings & data</b><span class="tip">Profile, sync, reminders, export, delete</span></span><span class="chev">›</span></button>
+    <a class="more-item" href="${APP.privacyUrl}"><span><b>Privacy policy</b><span class="tip">No account, no tracking, data stays on device</span></span><span class="chev">›</span></a>
+    <a class="more-item" href="${APP.termsUrl}"><span><b>Terms & medical disclaimer</b></span><span class="chev">›</span></a>
+    <a class="more-item" href="mailto:${APP.supportEmail}"><span><b>Contact support</b><span class="tip">${esc(APP.supportEmail)}</span></span><span class="chev">›</span></a>
+  </div>
+  <p class="note">${esc(APP.name)} ${esc(APP.version)}. Not affiliated with or endorsed by Google, Fitbit or WHOOP. Method references are listed on each screen.</p>`;
 }
 
 // ----- Today
@@ -217,23 +318,23 @@ function renderToday(c) {
   const trend = c.isLatest ? c.a.hrvTrend : null;
 
   return `
-  <div class="grid cols-3">
-    <div class="card ring-card">
+  <div class="grid cols-3 rings">
+    <div class="card ring-card" data-tab="sleep">
       <div class="label c-sleep">Sleep</div>
       ${ring({ frac: (sp?.score ?? 0) / 100, color: HEX.sleep, center: sp ? Math.round(sp.score) : '–', unit: '%' })}
       <div class="sub">${day.sleep ? `${fmtH(day.sleep.asleepMin)} of ${fmtH(day.sleepNeedMin)} needed` : 'No sleep recorded'}</div>
       ${pill(sleepBand(sp?.score))} ${confPill(conf.sleep)}
     </div>
-    <div class="card ring-card">
+    <div class="card ring-card" data-tab="health">
       <div class="label" style="color:${recColor}">Recovery</div>
       ${ring({ frac: (rec?.score ?? 0) / 100, color: recColor, center: recCenter, unit: rec?.score != null ? '%' : '' })}
-      <div class="sub">${rec?.calibrating && rec?.score == null ? 'Calibrating: needs 4+ nights' : `HRV ${fmt(day.hrv)} ms · RHR ${fmt(day.sleepRhr)} bpm`}</div>
+      <div class="sub">${rec?.calibrating && rec?.score == null ? 'Calibrating: needs 4+ nights' : `HRV ${fmt(day.hrv)}<span class="hide-sm"> ms</span> · RHR ${fmt(day.sleepRhr)}`}</div>
       ${pill(rb)} ${confPill(conf.recovery)}
     </div>
-    <div class="card ring-card">
+    <div class="card ring-card" data-tab="strain">
       <div class="label c-strain">Strain</div>
-      <div style="width:200px">${gauge({ value: day.strain, min: 0, max: 21, color: HEX.strain, band: [target.lo, target.hi], label: 'Day strain' })}</div>
-      <div class="sub">Target ${target.lo}–${target.hi} · ${esc(target.label)}</div>
+      <div class="gaugebox">${gauge({ value: day.strain, min: 0, max: 21, color: HEX.strain, band: [target.lo, target.hi], label: 'Day strain' })}</div>
+      <div class="sub">Target ${target.lo}–${target.hi}<span class="hide-sm"> · ${esc(target.label)}</span></div>
       ${pill(strainBand(day.strain))} ${confPill(conf.strain)}
     </div>
   </div>
@@ -324,7 +425,7 @@ function renderHealthspan(c) {
   })}<p class="tip">Dashed line = calendar age.</p></div>` : ''}
 
   <details class="card" style="margin-top:14px"><summary><strong>How Body Age is calculated</strong></summary>
-    <p class="tip">Following the method WHOOP published for WHOOP Age (2025 Healthspan white paper), each of nine habits is compared with a health-guideline target.
+    <p class="tip">Following the effective-age method described in WHOOP's published 2025 Healthspan white paper, each of nine habits is compared with a health-guideline target.
     The all-cause-mortality hazard ratio from large studies is converted into years with 10·ln(HR), because mortality risk rises about 10% per year of age.
     The years are added to your calendar age. Meeting a target adds 0. Beating it subtracts years. Falling short adds years.
     Because the habits overlap, every impact is scaled by 0.57. That factor was fitted so WHOOP's four published reference cases come out right
@@ -456,7 +557,7 @@ function renderStrain(c) {
     series: [{ type: 'bar', values: last.map((d) => d.recovery?.score ?? null), colorFn: (v) => HEX[recoveryBand(v).key] }],
     yMin: 0, yMax: 100, height: 120,
   })}<p class="tip">Top: day strain (0–21). Bottom: next-morning recovery.</p></div>
-  <p class="note">Strain = Banister TRIMP on %HRR (max HR ${c.a.maxHr} bpm${state.settings.maxHr ? ', set by you' : ', estimated'}) on a soft-capped log scale fitted to WHOOP's anchors: 1 h walk ≈ 6, 1 h run ≈ 12, marathon ≈ 20, 24 h at max HR = 21.</p>`;
+  <p class="note">Strain = Banister TRIMP on %HRR (max HR ${c.a.maxHr} bpm${state.settings.maxHr ? ', set by you' : ', estimated'}) on a soft-capped log scale fitted to published anchors: 1 h walk ≈ 6, 1 h run ≈ 12, marathon ≈ 20, 24 h at max HR = 21.</p>`;
 }
 
 // ----- Stress
@@ -480,7 +581,7 @@ function renderStress(c) {
     labels: st.series.map((s) => `${String(Math.floor(s.minute / 60)).padStart(2, '0')}:00`),
     series: [{ type: 'bar', values: vals, colorFn: (v) => (v >= 2 ? HEX.red : v >= 1 ? HEX.stress : HEX.green) }],
     yMin: 0, yMax: 3, yFmt: (v) => v.toFixed(1),
-  })}<p class="tip">15-minute averages. Gaps are workouts or movement, which are excluded like WHOOP's motion correction. Score = heart rate above your 14-day resting level, scaled 0–3.</p></div>`;
+  })}<p class="tip">15-minute averages. Gaps are workouts or movement, which are excluded (motion correction). Score = heart rate above your 14-day resting level, scaled 0–3.</p></div>`;
 }
 
 // ----- Health monitor
@@ -618,7 +719,7 @@ function renderDevices(c) {
 
   <h3 class="section-title">Measurement: Fitbit vs WHOOP</h3>
   <div class="card" style="overflow-x:auto"><table class="table">
-    <thead><tr><th>Signal</th><th>Fitbit / Pixel Watch</th><th>WHOOP</th><th>Accuracy evidence</th></tr></thead>
+    <thead><tr><th>Signal</th><th>Fitbit / Pixel Watch</th><th>WHOOP (for comparison)</th><th>Accuracy evidence</th></tr></thead>
     <tbody>${rows.map((r) => `<tr><td><strong>${esc(r[0])}</strong></td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td class="tip">${esc(r[3])}</td></tr>`).join('')}</tbody>
   </table></div>
 
@@ -627,7 +728,7 @@ function renderDevices(c) {
     <thead><tr><th>Fitbit / Google Health</th><th>WHOOP</th><th>Difference</th></tr></thead>
     <tbody>${SCORE_MAP.map((r) => `<tr><td>${esc(r.fitbit)}</td><td>${esc(r.whoop)}</td><td class="tip">${esc(r.diff)}</td></tr>`).join('')}</tbody>
   </table>
-  <p class="tip">Fitbit's own Readiness, Sleep Score and Cardio Load are not available through the Google Health API, so this app calculates its WHOOP-style scores from the raw signals instead.</p></div>
+  <p class="tip">Fitbit's own Readiness, Sleep Score and Cardio Load are not available through the Google Health API, so this app calculates its own scores from the raw signals instead.</p></div>
 
   <h3 class="section-title">Google tracker lineup (Nov 2026)</h3>
   <div class="card" style="overflow-x:auto"><table class="table">
@@ -646,6 +747,7 @@ function openSettings() {
   const g = state.config;
   const p = profile();
   const form = $('#settings-form');
+  const native = platform.isNative;
   form.innerHTML = `
     <div class="row"><h2>Profile & data</h2><button class="icon-btn" value="close" aria-label="Close">✕</button></div>
     <div class="two">
@@ -663,20 +765,22 @@ function openSettings() {
     <hr>
     <strong>Google Health (Fitbit) sync</strong>
     <div class="actions">
-      ${g.googleConfigured
+      ${g.available
         ? (g.connected
           ? '<button class="btn" value="sync">Sync now</button><button class="btn danger" value="logout">Disconnect</button>'
-          : '<a class="btn" href="/auth/login">Connect Google Health</a>')
-        : '<span class="tip">Not configured. Add a Google OAuth client to <code>.env</code> and restart the server (see README).</span>'}
+          : '<button class="btn" value="connect">Connect Google Health</button>')
+        : `<span class="tip">${native ? 'Google sign-in is not enabled in this build.' : 'Not configured. Add a Google OAuth client to <code>.env</code> and restart the server (see README).'}</span>`}
     </div>
+    ${native ? `<label class="checkline"><input type="checkbox" name="reminders" ${s.reminders ? 'checked' : ''}/> Bedtime and morning reminders</label>` : ''}
     <strong>Files</strong>
     <div class="actions">
-      <label class="btn">Import export folder<input type="file" id="import-dir2" webkitdirectory multiple hidden /></label>
+      ${native ? '' : '<label class="btn">Import export folder<input type="file" id="import-dir2" webkitdirectory multiple hidden /></label>'}
       <label class="btn">Import files<input type="file" id="import-files" multiple accept=".json,.csv" hidden /></label>
       ${state.dataset ? '<button class="btn" value="export">Export my data</button>' : ''}
       <button class="btn" value="demo">Load demo</button>
-      ${state.dataset ? '<button class="btn danger" value="clear">Clear all data</button>' : ''}
+      <button class="btn danger" value="clear">Delete all data</button>
     </div>
+    <p class="tip"><a href="${APP.privacyUrl}">Privacy policy</a> · <a href="${APP.termsUrl}">Terms</a> · ${esc(APP.name)} ${esc(APP.version)}</p>
     ${state.dataset?.warnings?.length ? `<details><summary class="tip">${state.dataset.warnings.length} import/sync warnings</summary><pre class="tip" style="white-space:pre-wrap">${esc(state.dataset.warnings.join('\n'))}</pre></details>` : ''}
   `;
   $('#settings').showModal();
@@ -684,6 +788,7 @@ function openSettings() {
 
 async function onSettingsAction(action) {
   const fd = new FormData($('#settings-form'));
+  const native = platform.isNative;
   if (action === 'save') {
     state.settings = {
       ...state.settings,
@@ -696,27 +801,37 @@ async function onSettingsAction(action) {
       deviceSince: fd.get('deviceSince') || ((fd.get('device') && state.analysis && fd.get('device') !== state.analysis.device.id && state.settings.device)
         ? state.analysis.latest.date : state.settings.deviceSince || null),
       hrIsUtc: fd.get('hrIsUtc') !== '0',
+      reminders: native ? fd.get('reminders') === 'on' : state.settings.reminders,
     };
+    if (state.settings.reminders) await platform.requestNotificationPermission();
     lsSet('settings', state.settings);
     recompute(true);
     render();
+    updateReminders();
     toast('Profile saved');
   } else if (action === 'sync') await syncGoogle();
+  else if (action === 'connect') await connectGoogle();
   else if (action === 'logout') {
-    await fetch('/auth/logout', { method: 'POST' }).catch(() => {});
+    await platform.disconnect();
     state.config.connected = false;
-    toast('Disconnected from Google Health');
+    render();
+    toast('Disconnected and access revoked');
   } else if (action === 'export') exportData();
   else if (action === 'demo') await loadDemo();
   else if (action === 'clear') {
-    if (!confirm('Delete all data, journal and settings stored in this browser?')) return;
+    if (!confirm(`Delete all health data, journal and settings from this device${state.config.connected ? ' and revoke Google access' : ''}? This cannot be undone.`)) return;
+    if (state.config.connected) await platform.disconnect();
     await idbDel('dataset');
     localStorage.clear();
     state.dataset = null;
     state.analysis = null;
     state.journal = {};
-    state.settings = { wakeTime: '07:00' };
+    state.config.connected = false;
+    state.settings = { wakeTime: '07:00', onboarded: false };
+    state.onboardStep = 0;
+    await platform.scheduleReminders({ enabled: false });
     render();
+    toast('All data deleted');
   }
 }
 
@@ -724,7 +839,7 @@ async function onSettingsAction(action) {
 document.addEventListener('click', async (e) => {
   const t = e.target.closest('[data-action],[data-tab],[data-range],[data-journal]');
   if (!t) return;
-  if (t.dataset.tab) { state.tab = t.dataset.tab; render(); window.scrollTo(0, 0); return; }
+  if (t.dataset.tab) { platform.tap(); state.tab = t.dataset.tab; render(); window.scrollTo(0, 0); return; }
   if (t.dataset.range) { state.trendRange = Number(t.dataset.range); render(); return; }
   if (t.dataset.journal) {
     const date = state.analysis.days[state.idx].date;
@@ -743,6 +858,22 @@ document.addEventListener('click', async (e) => {
   if (a === 'open-settings') openSettings();
   if (a === 'demo') await loadDemo();
   if (a === 'sync') await syncGoogle();
+  if (a === 'connect') await connectGoogle();
+  if (a === 'onboard-next') { platform.tap(); state.onboardStep++; render(); window.scrollTo(0, 0); }
+  if (a === 'onboard-profile') {
+    const f = $('#onboard-form');
+    if (!f.reportValidity()) return;
+    const fd = new FormData(f);
+    state.settings = {
+      ...state.settings,
+      age: Number(fd.get('age')), sex: fd.get('sex'), device: fd.get('device'), wakeTime: fd.get('wakeTime') || '07:00',
+      reminders: fd.get('reminders') === 'on', onboarded: true,
+    };
+    if (state.settings.reminders) await platform.requestNotificationPermission();
+    lsSet('settings', state.settings);
+    state.onboardStep = 3;
+    render();
+  }
 });
 
 $('#settings-form').addEventListener('submit', async (e) => {
@@ -760,12 +891,27 @@ document.addEventListener('change', (e) => {
     $('#settings').open && $('#settings').close();
     importFromFiles(e.target.files);
   }
+  if (e.target.id === 'consent') {
+    state.settings.consent = e.target.checked;
+    lsSet('settings', state.settings);
+    $('#consent-next').disabled = !e.target.checked;
+  }
   if (e.target.id === 'wake-time') {
     state.settings.wakeTime = e.target.value;
     lsSet('settings', state.settings);
     render();
+    updateReminders();
   }
 });
+
+// Pull down at the top of the page to sync.
+let pullStart = null;
+document.addEventListener('touchstart', (e) => { pullStart = window.scrollY <= 0 ? e.touches[0].clientY : null; }, { passive: true });
+document.addEventListener('touchend', (e) => {
+  if (pullStart == null || !state.config.connected || state.busy) return;
+  if (e.changedTouches[0].clientY - pullStart > 110) { platform.tap(); syncGoogle(); }
+  pullStart = null;
+}, { passive: true });
 
 document.addEventListener('keydown', (e) => {
   if (!state.analysis || e.target.closest('input,select,textarea')) return;
@@ -775,16 +921,16 @@ document.addEventListener('keydown', (e) => {
 
 // ---------------------------------------------------------------- boot
 (async function boot() {
-  try {
-    const r = await fetch('/api/config');
-    if (r.ok) state.config = await r.json();
-  } catch { /* static hosting: no server features */ }
+  await platform.initNative();
+  document.title = APP.name;
+  $('#brand-name').textContent = APP.name;
+  state.config = await platform.connectionStatus();
 
   const hash = location.hash;
   if (hash.startsWith('#error=')) {
     const err = decodeURIComponent(hash.slice(7));
     toast(err === 'account_not_linked'
-      ? 'Your Fitbit account isn\'t linked to Google Health yet. Open the Google Health app, sign in with Google and migrate, then try again.'
+      ? "Your Fitbit account isn't linked to Google Health yet. Open the Google Health app, sign in with Google and migrate, then try again."
       : `Google sign-in failed: ${err}`, 9000);
     history.replaceState(null, '', '/');
   }
@@ -792,13 +938,21 @@ document.addEventListener('keydown', (e) => {
   const saved = await idbGet('dataset');
   if (saved?.days?.length) {
     state.dataset = saved;
+    if (!state.settings.onboarded) { state.settings.onboarded = true; lsSet('settings', state.settings); }
     recompute(false);
   }
   render();
+  await platform.hideSplash();
+  updateReminders();
 
   if (hash === '#connected') {
     history.replaceState(null, '', '/');
     state.config.connected = true;
+    state.settings.onboarded = true;
+    lsSet('settings', state.settings);
     await syncGoogle();
+  } else if (state.config.connected && isStale()) {
+    syncGoogle({ quiet: Boolean(state.dataset) });
   }
+  platform.onResume(() => { if (state.config.connected && isStale() && !state.busy) syncGoogle({ quiet: true }); });
 })();
