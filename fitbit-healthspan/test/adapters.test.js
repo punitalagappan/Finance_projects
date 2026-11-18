@@ -86,7 +86,8 @@ test('Google Health sync normalises documented payload shapes', async () => {
   assert.deepEqual(warnings, []);
   assert.equal(profile.age, 41);
   const d = days.find((x) => x.date === iso(d1));
-  assert.equal(d.hrv, 47.5);
+  assert.equal(d.hrvDeep, 47.5);
+  assert.equal(d.hrvAvg, 40);
   assert.equal(d.rhr, 56);
   assert.equal(d.spo2, 95.8);
   assert.ok(Math.abs(d.skinTempDelta - 0.2) < 1e-9);

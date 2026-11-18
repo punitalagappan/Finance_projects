@@ -6,14 +6,16 @@ There are no dependencies. You need Node ≥ 18 and a browser. Your data stays o
 
 > ⚠️ **The Fitbit Web API was switched off on 2 Nov 2026.** This app uses its successor, the **Google Health API v4** (`health.googleapis.com`). If you don't want to set up Google Cloud, you can import a Fitbit / Google Takeout export instead.
 
-The research behind every formula is in [`../reports/Fitbit WHOOP style biological age.md`](../reports/Fitbit%20WHOOP%20style%20biological%20age.md).
+The research behind every formula is in two reports:
+- [`../reports/Fitbit WHOOP style biological age.md`](../reports/Fitbit%20WHOOP%20style%20biological%20age.md): how WHOOP's scores and WHOOP Age work.
+- [`../reports/Fitbit vs WHOOP tracker differences.md`](../reports/Fitbit%20vs%20WHOOP%20tracker%20differences.md): sensors, measurement methods, accuracy studies and score definitions for Fitbit/Pixel Watch vs WHOOP, plus the Fitbit adaptation rules this app implements.
 
 ## Quick start
 
 ```bash
 cd fitbit-healthspan
 npm start            # → http://localhost:8787
-npm test             # 14 tests, including the report's acceptance checks
+npm test             # 22 tests: the report's acceptance checks plus the Fitbit adaptation rules
 ```
 
 Click **Load demo** to explore 210 days of realistic synthetic data. The demo person catches a cold six weeks in, drinks on some weekends and gets fitter over time.
@@ -37,6 +39,7 @@ Click **Load demo** to explore 210 days of realistic synthetic data. The demo pe
      - `googlehealth.health_metrics_and_measurements.readonly`
      - `googlehealth.sleep.readonly`
      - `googlehealth.profile.readonly`
+     - `googlehealth.settings.readonly` (optional: lets the app detect which tracker you wear)
    - Under **Credentials → Create OAuth client ID → Web application**, add the redirect URI `http://localhost:8787/auth/callback`.
 3. `cp .env.example .env`, fill in `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, then run `npm start`.
 4. Open the app, click **Connect**, approve the access request, and the first sync runs (about 200 days, usually 1–2 minutes).
@@ -62,6 +65,32 @@ Click **Load demo** to explore 210 days of realistic synthetic data. The demo pe
 | Trends | 30/90/180-day charts for 10 metrics | — |
 
 Fitbit already provides HRV, SpO₂, skin temperature, breathing rate, VO₂max, sleep stages and minute-level heart rate. The app adds the WHOOP-style models on top. Fitbit doesn't share biological sex, so set it in **Settings** (along with an optional max HR or body-fat %).
+
+## Fitbit vs WHOOP: what differs and how the app adapts
+
+The **Fitbit vs WHOOP** tab shows this for your own tracker. In short:
+
+| | Fitbit / Pixel Watch | WHOOP 4.0 / 5.0 / MG |
+|---|---|---|
+| Hardware | 11 configurations in 3 tiers: **A** Pixel Watch 2–5 and Sense 2 (all sensors, continuous EDA, ECG); **B** Edge, Charge 6, Versa 4 (GPS); **C** Air, Inspire 3, Luxe (no GPS) | One screenless optical stack (5 LEDs, 4 photodiodes); 5.0/MG sample at a reported ~26 Hz; MG adds ECG |
+| HRV | RMSSD over 5-min windows in the main sleep; nightly and **deep-sleep** values | RMSSD over 5-min windows stepping every 30 s, weighted to slow-wave and late sleep |
+| Resting HR | Daily value, may use awake data | During sleep |
+| HR sampling | 1 s in exercise, about every 5–15 s at rest | Continuous |
+| Sleep staging vs lab (κ) | Sense 0.42, Charge 5 0.41 | WHOOP 4.0 0.37 |
+| Own scores | Readiness, Sleep Score, Cardio/Target Load, Stress Mgmt, Cardio Fitness. **None are in the API**, and there's no biological age | Recovery, Strain, Sleep Performance/Need, Stress Monitor, Healthspan |
+| Cost | Device $99–$249, plus optional Premium $9.99/mo | $199–$359/yr membership |
+
+No study has worn both brands on the same people at the same time, so **no fixed Fitbit↔WHOOP conversion exists**. The app instead applies the report's rules:
+
+- **HRV:** deep-sleep RMSSD is preferred. If it's missing on >20% of nights, the whole series switches to whole-night RMSSD; the two are never mixed.
+- **Personal baselines:** every score compares you with your own robust 30-night baseline, so device offsets cancel out.
+- **Resting HR:** taken from heart rate during sleep (5th percentile). Fitbit's daily RHR is the fallback, flagged when Fitbit computed it from awake data only.
+- **Zones:** recomputed from raw HR using heart-rate reserve. Fitbit's Active Zone Minutes are never used for WHOOP-style metrics.
+- **Sampling gaps:** gaps of up to 5 min are bridged; longer gaps count as not worn.
+- **VO₂max:** only run-based (GPS) estimates count toward Body Age. Demographic Cardio Fitness estimates re-count resting HR and age, so they're excluded. On a Tier C device (no GPS), Body Age runs without VO₂max.
+- **Biological sex:** Google doesn't share it. Body Age stays locked until you set it, and Strain uses averaged coefficients in the meantime.
+- **Switching trackers:** set "Using this tracker since" in Settings. Once 7 nights exist on the new tracker, older nights are rescaled to it by the ratio of median HRV and RHR, and scores are flagged for 14 nights.
+- **Confidence:** each score is rated High, Medium or Low with reason codes such as `NO_STAGES`, `LOW_HR_COVERAGE`, `HRV_WHOLE_NIGHT` and `DEVICE_CHANGED`. A Low-confidence Recovery is shown grey.
 
 ## How the scores work
 
@@ -104,6 +133,8 @@ server.js               zero-dependency HTTP server: static files, OAuth (PKCE),
 lib/googleHealth.js     Google Health API v4 client + tolerant parser → normalised days
 public/engine/          scoring engine (pure ES modules, shared by browser and tests)
   healthspan.js  recovery.js  strain.js  sleep.js  stress.js  monitor.js  journal.js  zones.js  index.js
+  devices.js     per-device capability profiles, tiers, Fitbit↔WHOOP score map, adaptation notes
+  confidence.js  per-score confidence flags (High / Medium / Low)
 public/adapters/        demo.js (synthetic data), takeout.js (export importer)
 public/app.js, ui/      dashboard (vanilla JS + SVG charts)
 test/                   node:test suites (engine acceptance tests + adapter fixtures)

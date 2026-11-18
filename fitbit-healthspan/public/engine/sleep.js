@@ -97,7 +97,7 @@ export function sleepPerformance(sleep, needMin, consistency, sleepStressPct) {
     efficiency: eff,
     consistency: isNum(consistency) ? consistency : null,
     sleepStressPct: isNum(sleepStressPct) ? sleepStressPct : null,
-    restorativeMin: (sleep.deepMin || 0) + (sleep.remMin || 0),
+    restorativeMin: sleep.classic ? null : (sleep.deepMin || 0) + (sleep.remMin || 0),
   };
 }
 

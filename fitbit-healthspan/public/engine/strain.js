@@ -16,7 +16,11 @@ const P = 12;
 export function trimpWeight(x, sex) {
   if (x < 0.2) return 0;
   const xc = clamp(x, 0, 1);
-  return sex === 'female' ? xc * 0.86 * Math.exp(1.67 * xc) : xc * 0.64 * Math.exp(1.92 * xc);
+  const m = xc * 0.64 * Math.exp(1.92 * xc);
+  const f = xc * 0.86 * Math.exp(1.67 * xc);
+  if (sex === 'female') return f;
+  if (sex === 'male') return m;
+  return (m + f) / 2; // sex unknown: averaged coefficients (flagged)
 }
 
 /** Banister load from per-minute HR between minute indices [from, to). */

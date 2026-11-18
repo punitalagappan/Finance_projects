@@ -85,18 +85,20 @@ export function aggregate(days, profile = {}) {
     z13: anyZones ? perWeek((d) => d.workoutZ13) : null,
     z45: anyZones ? perWeek((d) => d.workoutZ45) : null,
     strength: perWeek((d) => d.strengthMin),
-    vo2max: mean(days.map((d) => d.vo2max)),
+    // Only GPS-run VO2max counts; demographic estimates re-count resting HR and age (report rule).
+    vo2max: mean(days.map((d) => (d.vo2Estimated ? null : d.vo2max))),
     rhr: mean(days.filter((d) => d.validNight).map((d) => d.sleepRhr)),
     leanPct: isNum(fat) ? 100 - fat : null,
   };
 }
 
-export function bodyAge(values, age, sex) {
+export function bodyAge(values, age, sex, { vo2Weight = 1 } = {}) {
   const T = targets(age, sex);
   const rows = METRICS.map((m) => {
     const v = values[m.key];
     const has = isNum(v);
-    return { ...m, value: has ? v : null, target: T[m.key], years: has ? SHRINK * CURVES[m.key](v, T[m.key]) : 0, missing: !has };
+    const w = m.key === 'vo2max' ? vo2Weight : 1;
+    return { ...m, value: has ? v : null, target: T[m.key], years: has ? w * SHRINK * CURVES[m.key](v, T[m.key]) : 0, missing: !has, weight: w };
   });
   const offset = rows.reduce((a, r) => a + r.years, 0);
   return { age: age + offset, offset, rows };
@@ -121,13 +123,15 @@ export function pace(nowAge, projectedAge) {
 export function computeHealthspan(days, profile) {
   const last31 = days.slice(-31);
   const recoveries = last31.filter((d) => d.validNight).length;
-  const now = bodyAge(aggregate(days.slice(-182), profile), profile.age, profile.sex);
+  const opts = { vo2Weight: profile.vo2Weight ?? 1 };
+  const now = bodyAge(aggregate(days.slice(-182), profile), profile.age, profile.sex, opts);
   // Projection: last-30-day habits held for 6 months. Targets are kept at today's age so that Pace reflects
   // behaviour change only (identical habits → exactly 1.0x), then 0.5 y of calendar time is added.
-  const proj = bodyAge(aggregate(days.slice(-30), profile), profile.age, profile.sex);
+  const proj = bodyAge(aggregate(days.slice(-30), profile), profile.age, profile.sex, opts);
   const p = pace(now.age, proj.age + 0.5);
   return {
-    unlocked: recoveries >= 21,
+    sexKnown: profile.sex === 'male' || profile.sex === 'female',
+    unlocked: recoveries >= 21 && (profile.sex === 'male' || profile.sex === 'female'),
     recoveriesLast31: recoveries,
     calibrating: days.filter((d) => d.validNight).length < 90,
     chronologicalAge: profile.age,

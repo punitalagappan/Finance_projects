@@ -5,12 +5,13 @@
 //   date: 'YYYY-MM-DD',                       // civil date; sleep is keyed by its wake-up date
 //   sleep: { start, end, asleepMin, inBedMin, deepMin, remMin, lightMin, awakeMin } | null,   // main sleep
 //   naps: [{ start, end, asleepMin }],
-//   hrv,                // nightly RMSSD in ms (deep-sleep RMSSD preferred)
+//   hrvDeep, hrvAvg,    // nightly deep-sleep / whole-night RMSSD in ms (Google Health); or `hrv` if only one is known
 //   rhr,                // Fitbit daily resting HR (fallback for sleeping RHR)
 //   respRate, spo2,     // nightly breaths/min and SpO2 %
 //   skinTempDelta,      // nightly skin temp minus personal baseline, °C
 //   skinTempSd,         // optional 30-day SD of the nightly deviation
-//   vo2max, steps, weightKg, bodyFatPct,
+//   vo2max, vo2Estimated, // VO2max and whether it is a demographic (non-GPS) estimate
+//   steps, weightKg, bodyFatPct,
 //   azm: { fatBurn, cardio, peak },            // minutes in Fitbit AZM zones (fallback when no intraday HR)
 //   workouts: [{ name, type, start, durationMin, avgHr, strength }],
 //   hrMinutes: number[1440] | null,           // mean HR per minute, local midnight → midnight
@@ -25,6 +26,8 @@ import { computeRecovery } from './recovery.js';
 import { stressMinutes, summariseStress } from './stress.js';
 import { computeHealthspan } from './healthspan.js';
 import { healthMonitor } from './monitor.js';
+import { deviceProfile } from './devices.js';
+import { dayConfidence } from './confidence.js';
 
 export const STRENGTH_TYPES = new Set([
   'STRENGTH_TRAINING', 'WEIGHTLIFTING', 'WEIGHTS', 'FREE_WEIGHTS', 'WEIGHT_MACHINES', 'FUNCTIONAL_STRENGTH_TRAINING',
@@ -44,6 +47,44 @@ export function estimateMaxHr(age, observed = []) {
   const gellish = 192 - 0.007 * age * age;
   const p = percentile(observed, 0.995);
   return Math.round(Math.max(gellish, isNum(p) ? p : 0));
+}
+
+/**
+ * New-device baseline segment: once ≥7 valid nights exist on the new tracker (before `date`), rescale the old
+ * segment's HRV and sleeping RHR by the ratio of medians (new / old) so baselines stay comparable.
+ */
+export function segmentHistory(history, date, since) {
+  if (!since || date < since) return history;
+  const oldSeg = history.filter((d) => d.date < since);
+  const newSeg = history.filter((d) => d.date >= since);
+  if (!oldSeg.length) return history;
+  if (newSeg.filter((d) => d.validNight).length < 7) return history;
+  const ratio = (key) => {
+    const a = median(newSeg.map((d) => d[key]));
+    const b = median(oldSeg.slice(-30).map((d) => d[key]));
+    return isNum(a) && isNum(b) && b > 0 ? a / b : 1;
+  };
+  const rH = ratio('hrv');
+  const rR = ratio('sleepRhr');
+  return [
+    ...oldSeg.map((d) => ({ ...d, hrv: isNum(d.hrv) ? d.hrv * rH : d.hrv, sleepRhr: isNum(d.sleepRhr) ? d.sleepRhr * rR : d.sleepRhr })),
+    ...newSeg,
+  ];
+}
+
+/** Bridge sampling gaps up to `maxGap` minutes by linear interpolation (Fitbit samples every 5-15 s at rest). */
+export function bridgeGaps(arr, maxGap = 5) {
+  const out = arr.slice();
+  let last = -1;
+  for (let i = 0; i < out.length; i++) {
+    if (!isNum(out[i])) continue;
+    const gap = i - last - 1;
+    if (last >= 0 && gap > 0 && gap <= maxGap) {
+      for (let k = 1; k <= gap; k++) out[last + k] = out[last] + ((out[i] - out[last]) * k) / (gap + 1);
+    }
+    last = i;
+  }
+  return out;
 }
 
 const minuteOf = (iso) => { const d = new Date(iso); return d.getHours() * 60 + d.getMinutes(); };
@@ -79,15 +120,27 @@ function sleepRangesForDay(date, byDate) {
 
 export function analyze(rawDays, profile, opts = {}) {
   if (!rawDays || !rawDays.length) return null;
-  const sex = profile.sex === 'female' ? 'female' : 'male';
+  const sexKnown = profile.sex === 'female' || profile.sex === 'male';
+  const sex = sexKnown ? profile.sex : 'unknown';
   const sorted = [...rawDays].sort((a, b) => (a.date < b.date ? -1 : 1));
   const input = new Map(sorted.map((d) => [d.date, d]));
   const dates = dateRange(sorted[0].date, opts.until || sorted[sorted.length - 1].date);
 
+  const device = deviceProfile(profile.device);
+
+  // Fitbit adaptation: one consistent HRV series. Deep-sleep RMSSD is the closest analogue to WHOOP's
+  // slow-wave-weighted HRV; if it is missing on >20% of nights, use whole-night RMSSD for every night instead.
+  const hrvNights = sorted.filter((d) => isNum(d.hrvDeep) || isNum(d.hrvAvg));
+  const deepShare = hrvNights.length ? hrvNights.filter((d) => isNum(d.hrvDeep)).length / hrvNights.length : 0;
+  const hrvSource = !hrvNights.length ? 'single' : deepShare >= 0.8 ? 'deep' : 'whole-night';
+
   // ---- pass 1: normalise + per-day facts that don't depend on history ----
   const days = dates.map((date) => {
     const d = { ...(input.get(date) || {}), date };
-    if (d.hrMinutes) d.hrMinutes = d.hrMinutes.map((v) => (isNum(v) && v > 25 ? v : null));
+    if (hrvSource === 'deep') d.hrv = isNum(d.hrvDeep) ? d.hrvDeep : null;
+    else if (hrvSource === 'whole-night') d.hrv = isNum(d.hrvAvg) ? d.hrvAvg : null;
+    if (d.hrMinutes) d.hrMinutes = bridgeGaps(d.hrMinutes.map((v) => (isNum(v) && v > 25 ? v : null)), 5);
+    if (isNum(d.vo2max) && d.vo2Estimated == null) d.vo2Estimated = device.vo2 === 'demographic';
     d.workouts = (d.workouts || []).map((w) => ({
       ...w,
       strength: isStrength(w),
@@ -111,6 +164,12 @@ export function analyze(rawDays, profile, opts = {}) {
     }
     if (!isNum(d.sleepRhr) && isNum(d.rhr)) d.sleepRhr = d.rhr;
     d.validNight = !!(d.sleep && d.sleep.asleepMin >= 180 && (isNum(d.hrv) || isNum(d.sleepRhr)));
+    d.quality = {
+      hrHours: d.hrMinutes ? d.hrMinutes.filter(isNum).length / 60 : 0,
+      hrvSource: isNum(d.hrv) ? hrvSource : null,
+      sleepStaged: d.sleep ? !d.sleep.classic : null,
+      rhrSource: d.sleep && isNum(d.sleepRhr) && d.sleepRhr !== d.rhr ? 'sleep-hr' : isNum(d.rhr) ? 'fitbit-daily' : null,
+    };
   }
 
   const exerciseHr = [];
@@ -193,7 +252,8 @@ export function analyze(rawDays, profile, opts = {}) {
       if (s.length > 60) sleepStressPct = (100 * s.filter((v) => v >= 2).length) / s.length;
     }
     d.sleepPerf = sleepPerformance(d.sleep, need.totalMin, d.consistency, sleepStressPct);
-    d.recovery = d.validNight || isNum(d.hrv) ? computeRecovery(d, history.filter((x) => x.validNight || x.recovery), d.sleepPerf?.score) : null;
+    d.recovery = d.validNight || isNum(d.hrv) ? computeRecovery(d, segmentHistory(history.filter((x) => x.validNight || x.recovery), d.date, profile.deviceSince), d.sleepPerf?.score) : null;
+    d.confidence = dayConfidence(d, { hrvSource, device, deviceSince: profile.deviceSince, sexKnown });
   });
 
   for (const d of days) delete d._stressMin;
@@ -203,14 +263,20 @@ export function analyze(rawDays, profile, opts = {}) {
   const tonight = sleepNeed(days);
   const effs = days.slice(-30).map((d) => sleepEfficiency(d.sleep)).filter(isNum);
 
+  // Demographic (non-GPS) VO2max estimates are derived from resting HR + age + sex + weight, which Body Age
+  // already counts, so only run-based VO2max enters it (aggregate() drops estimated values).
+  const vo2Vals = days.slice(-182).filter((d) => isNum(d.vo2max));
+  const vo2Demographic = vo2Vals.length > 0 && vo2Vals.every((d) => d.vo2Estimated);
+  const hsProfile = { ...profile, sex };
+
   // Weekly Healthspan history (every Sunday with enough data) + current value.
   const healthspanHistory = [];
   days.forEach((d, i) => {
     if (i < 30 || parseDate(d.date).getDay() !== 0) return;
-    const h = computeHealthspan(days.slice(0, i + 1), profile);
+    const h = computeHealthspan(days.slice(0, i + 1), hsProfile);
     if (h.unlocked) healthspanHistory.push({ date: d.date, bodyAge: h.bodyAge, pace: h.pace });
   });
-  const healthspan = computeHealthspan(days, profile);
+  const healthspan = computeHealthspan(days, hsProfile);
 
   // HRV trend (HRV4Training style): 7-day ln-RMSSD mean vs 60-day mean ± 0.5 SD.
   const ln = (arr) => arr.map((d) => d.hrv).filter(isNum).map(Math.log);
@@ -230,6 +296,8 @@ export function analyze(rawDays, profile, opts = {}) {
 
   return {
     profile: { ...profile, sex },
+    device: { id: profile.device || 'other', ...device },
+    adaptation: { hrvSource, deepShare, vo2Demographic, sexKnown, deviceSince: profile.deviceSince || null, maxHrSource: profile.maxHr ? 'user' : 'estimated' },
     maxHr,
     days,
     byDate,
@@ -254,3 +322,5 @@ export { computeHealthspan } from './healthspan.js';
 export { healthMonitor, VITALS } from './monitor.js';
 export { sleepNeed } from './sleep.js';
 export { strainTarget } from './strain.js';
+export { DEVICES, WHOOP, SCORE_MAP, TIERS, detectDevice, deviceProfile, adaptationNotes } from './devices.js';
+export { FLAG_INFO } from './confidence.js';

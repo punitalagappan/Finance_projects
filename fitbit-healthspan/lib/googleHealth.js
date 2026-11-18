@@ -16,6 +16,8 @@ export const SCOPES = [
   'https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly',
   'https://www.googleapis.com/auth/googlehealth.sleep.readonly',
   'https://www.googleapis.com/auth/googlehealth.profile.readonly',
+  // Optional: lets the app detect which tracker you wear (users.pairedDevices) to apply per-device rules.
+  'https://www.googleapis.com/auth/googlehealth.settings.readonly',
 ];
 
 // ---------------- OAuth (Authorization Code + PKCE, confidential web-server client) ----------------
@@ -212,8 +214,15 @@ export async function syncDays(client, { days = 180, tz = 'UTC', onStep = () => 
 
   // Daily records (Daily type: one point per civil date).
   const dailyTypes = [
-    ['daily-heart-rate-variability', (d, p) => { d.hrv = field(p, /deepSleepRootMeanSquare/i) ?? field(p, /averageHeartRateVariability/i); }],
-    ['daily-resting-heart-rate', (d, p) => { d.rhr = field(p, /^beatsPerMinute$/); }],
+    // Keep both series; the engine picks one consistently (deep-sleep preferred, never mixed).
+    ['daily-heart-rate-variability', (d, p) => {
+      d.hrvDeep = field(p, /deepSleepRootMeanSquare/i);
+      d.hrvAvg = field(p, /averageHeartRateVariability/i);
+    }],
+    ['daily-resting-heart-rate', (d, p) => {
+      d.rhr = field(p, /^beatsPerMinute$/);
+      d.rhrAwakeOnly = findKey(p, (k) => k === 'calculationMethod') === 'ONLY_WITH_AWAKE_DATA';
+    }],
     ['daily-respiratory-rate', (d, p) => { d.respRate = field(p, /^breathsPerMinute$/); }],
     ['daily-oxygen-saturation', (d, p) => { d.spo2 = field(p, /^averagePercentage$/); }],
     ['daily-sleep-temperature-derivations', (d, p) => {
@@ -222,7 +231,13 @@ export async function syncDays(client, { days = 180, tz = 'UTC', onStep = () => 
       if (n != null && b != null) d.skinTempDelta = n - b;
       d.skinTempSd = field(p, /relativeNightlyStddev30d/i);
     }],
-    ['daily-vo2-max', (d, p) => { d.vo2max = field(p, /^vo2Max$/); }],
+    ['daily-vo2-max', (d, p) => {
+      d.vo2max = field(p, /^vo2Max$/);
+      const est = findKey(p, (k) => k === 'estimated');
+      const method = findKey(p, (k) => k === 'measurementMethod');
+      if (typeof est === 'boolean') d.vo2Estimated = est;
+      if (typeof method === 'string') d.vo2Estimated = /DEMOGRAPHIC/i.test(method);
+    }],
   ];
   for (const [type, apply] of dailyTypes) {
     await safely(type, async () => {
@@ -233,6 +248,19 @@ export async function syncDays(client, { days = 180, tz = 'UTC', onStep = () => 
       }
     });
   }
+
+  // VO2max provenance: run-based samples mark the day as measured (not demographic).
+  await safely('vo2-max', async () => {
+    for (const p of await client.list('vo2-max', `vo2_max.sample_time.physical_time >= "${startDate}T00:00:00Z"`)) {
+      const date = pointDate(p, tz);
+      const method = findKey(p, (k) => k === 'measurementMethod');
+      const v = field(p, /^vo2Max$/);
+      if (!date || typeof method !== 'string') continue;
+      const d = get(date);
+      if (/RUN/i.test(method)) { if (v != null) d.vo2max = v; d.vo2Estimated = false; }
+      else if (d.vo2Estimated == null) d.vo2Estimated = /DEMOGRAPHIC/i.test(method);
+    }
+  });
 
   // Steps per day (90-day dailyRollUp chunks).
   await safely('steps', async () => {
@@ -262,6 +290,11 @@ export async function syncDays(client, { days = 180, tz = 'UTC', onStep = () => 
         inBedMin: (num(summary.minutesInSleepPeriod) || 0) + (num(summary.minutesToFallAsleep) || 0) + (num(summary.minutesAfterWakeUp) || 0) || null,
       };
       for (const s of summary.stagesSummary || []) if (STAGE_KEYS[s.type]) rec[STAGE_KEYS[s.type]] = num(s.minutes);
+      const sleepType = findKey(p, (k, v) => k === 'type' && (v === 'CLASSIC' || v === 'STAGES'));
+      if (sleepType === 'CLASSIC') rec.classic = true;
+      const stagesStatus = findKey(p, (k) => k === 'stagesStatus');
+      if (typeof stagesStatus === 'string' && /REJECTED/i.test(stagesStatus)) rec.classic = true;
+      if (findKey(p, (k) => k === 'manuallyEdited') === true) rec.edited = true;
       const meta = findKey(p, (k) => k === 'metadata') || {};
       const d = get(end.slice(0, 10));
       const isNap = meta.nap === true || (meta.mainSleep === false && rec.asleepMin < 180);
@@ -328,6 +361,13 @@ export async function syncDays(client, { days = 180, tz = 'UTC', onStep = () => 
     const p = await client.call('/profile');
     const age = field(p, /^age$/i);
     if (age != null) profile.age = age;
+  });
+
+  await safely('paired-devices', async () => {
+    const json = await client.call('/pairedDevices');
+    const devices = json.pairedDevices || json.devices || (Array.isArray(json) ? json : []);
+    const names = devices.map((d) => findKey(d, (k) => k === 'deviceVersion' || k === 'displayName' || k === 'model')).filter(Boolean);
+    if (names.length) profile.deviceName = String(names[0]);
   });
 
   const out = [...map.values()].filter((d) => d.date >= startDate && d.date <= endDate).sort((a, b) => (a.date < b.date ? -1 : 1));

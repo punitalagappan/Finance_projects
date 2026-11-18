@@ -11,7 +11,7 @@ const isoAt = (date, minute) => {
   return `${toISODate(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
 };
 
-export const DEMO_PROFILE = { age: 34, sex: 'male', name: 'Demo athlete' };
+export const DEMO_PROFILE = { age: 34, sex: 'male', name: 'Demo athlete', deviceName: 'Charge 6' };
 
 export function generateDemo({ days = 210, end = toISODate(new Date()), seed = 7 } = {}) {
   const r = rng(seed);

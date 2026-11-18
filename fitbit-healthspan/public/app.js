@@ -1,6 +1,7 @@
 import {
   analyze, recoveryBand, strainBand, sleepBand, stressBand, bedtimeFor, computeHealthspan, healthMonitor, strainTarget,
   BEHAVIORS, behaviorImpacts, isNum, mean, clamp, parseDate, addDays,
+  DEVICES, WHOOP, SCORE_MAP, TIERS, FLAG_INFO, detectDevice, adaptationNotes,
 } from './engine/index.js';
 import { ring, gauge, timeChart, rangeBar } from './ui/charts.js';
 import { idbGet, idbSet, idbDel, lsGet, lsSet } from './ui/store.js';
@@ -48,8 +49,10 @@ function profile() {
   const s = state.settings;
   const p = state.dataset?.profile || {};
   return {
+    device: s.device || detectDevice(p.deviceName) || 'other',
     age: Number(s.age) || p.age || 35,
-    sex: s.sex || p.sex || 'male',
+    sex: s.sex || p.sex || null,
+    deviceSince: s.deviceSince || undefined,
     maxHr: Number(s.maxHr) || undefined,
     bodyFatPct: isNum(Number(s.bodyFatPct)) && s.bodyFatPct !== '' && s.bodyFatPct != null ? Number(s.bodyFatPct) : undefined,
   };
@@ -170,7 +173,7 @@ function render() {
   $('#current-date').textContent = c.isLatest ? `Today · ${fmtDate(c.day.date, { month: 'short', day: 'numeric' })}` : fmtDate(c.day.date);
   document.querySelector('[data-action="next-day"]').disabled = c.isLatest;
   document.querySelector('[data-action="prev-day"]').disabled = c.i === 0;
-  const tabs = { today: renderToday, healthspan: renderHealthspan, sleep: renderSleep, strain: renderStrain, stress: renderStress, health: renderHealth, trends: renderTrends, journal: renderJournal };
+  const tabs = { today: renderToday, healthspan: renderHealthspan, sleep: renderSleep, strain: renderStrain, stress: renderStress, health: renderHealth, trends: renderTrends, journal: renderJournal, devices: renderDevices };
   view.innerHTML = tabs[state.tab](c) + sourceFooter();
 }
 
@@ -206,7 +209,8 @@ function renderToday(c) {
   const rb = recoveryBand(rec?.score);
   const sp = day.sleepPerf;
   const hs = c.healthspan;
-  const recColor = rb ? HEX[rb.key] : HEX.muted;
+  const conf = day.confidence || { recovery: { level: 'high', flags: [] }, strain: { level: 'high', flags: [] }, sleep: { level: 'high', flags: [] } };
+  const recColor = rb && conf.recovery.level !== 'low' ? HEX[rb.key] : HEX.muted;
   const recCenter = rec?.score != null ? Math.round(rec.score) : '–';
   const target = c.target;
   const bed = bedtimeFor(c.tonight.totalMin, state.settings.wakeTime || '07:00', c.tonight.typicalEfficiency);
@@ -218,19 +222,19 @@ function renderToday(c) {
       <div class="label c-sleep">Sleep</div>
       ${ring({ frac: (sp?.score ?? 0) / 100, color: HEX.sleep, center: sp ? Math.round(sp.score) : '–', unit: '%' })}
       <div class="sub">${day.sleep ? `${fmtH(day.sleep.asleepMin)} of ${fmtH(day.sleepNeedMin)} needed` : 'No sleep recorded'}</div>
-      ${pill(sleepBand(sp?.score))}
+      ${pill(sleepBand(sp?.score))} ${confPill(conf.sleep)}
     </div>
     <div class="card ring-card">
       <div class="label" style="color:${recColor}">Recovery</div>
       ${ring({ frac: (rec?.score ?? 0) / 100, color: recColor, center: recCenter, unit: rec?.score != null ? '%' : '' })}
       <div class="sub">${rec?.calibrating && rec?.score == null ? 'Calibrating: needs 4+ nights' : `HRV ${fmt(day.hrv)} ms · RHR ${fmt(day.sleepRhr)} bpm`}</div>
-      ${pill(rb)}
+      ${pill(rb)} ${confPill(conf.recovery)}
     </div>
     <div class="card ring-card">
       <div class="label c-strain">Strain</div>
       <div style="width:200px">${gauge({ value: day.strain, min: 0, max: 21, color: HEX.strain, band: [target.lo, target.hi], label: 'Day strain' })}</div>
       <div class="sub">Target ${target.lo}–${target.hi} · ${esc(target.label)}</div>
-      ${pill(strainBand(day.strain))}
+      ${pill(strainBand(day.strain))} ${confPill(conf.strain)}
     </div>
   </div>
 
@@ -244,6 +248,8 @@ function renderToday(c) {
         <div>Sleep performance</div><div>${fmt(sp?.score)}%</div>
       </div>
       ${penaltyNotes(rec)}` : '<p class="muted">Recovery appears after 4 nights with HRV or resting heart rate data.</p>'}
+      ${flagList(conf)}
+      ${qualityLine(day, c.a)}
       ${trend ? `<hr><div class="row"><div>7-day HRV trend</div><div>${hrvTrendPill(trend)}</div></div>
         <p class="tip">7-day average ${fmt(trend.avg7)} ms vs your 60-day normal range ${fmt(trend.lo)}–${fmt(trend.hi)} ms.</p>` : ''}
     </div>
@@ -253,7 +259,7 @@ function renderToday(c) {
       <hr>
       <div class="row"><div><strong>Sleep tonight</strong><div class="tip">Need ${fmtH(c.tonight.totalMin)} asleep · in bed by <strong>${bed.bedtime}</strong> to wake at ${esc(state.settings.wakeTime || '07:00')}</div></div><div class="big c-sleep" style="font-size:28px">${fmtH(c.tonight.totalMin)}</div></div>
       <hr>
-      <div class="row"><div><strong>Body Age</strong><div class="tip">${hs.unlocked ? `${fmt(Math.abs(hs.difference), 1)} years ${hs.difference < 0 ? 'younger' : 'older'} than calendar age · Pace ${fmt(hs.pace, 1)}x` : `Unlocks after 21 nights in 31 days (${hs.recoveriesLast31}/21)`}</div></div>
+      <div class="row"><div><strong>Body Age</strong><div class="tip">${hs.unlocked ? `${fmt(Math.abs(hs.difference), 1)} years ${hs.difference < 0 ? 'younger' : 'older'} than calendar age · Pace ${fmt(hs.pace, 1)}x` : (hs.sexKnown ? `Unlocks after 21 nights in 31 days (${hs.recoveriesLast31}/21)` : 'Set your biological sex in Settings to unlock')}</div></div>
         <button class="btn" data-tab="healthspan"><span class="c-age" style="font-weight:800">${hs.unlocked ? fmt(hs.bodyAge, 1) : '–'}</span> →</button></div>
     </div>
   </div>
@@ -298,7 +304,7 @@ function renderHealthspan(c) {
         <div><div class="big c-age">${fmt(hs.bodyAge, 1)}</div><div class="muted">calendar age ${hs.chronologicalAge}</div></div>
         <div style="text-align:right"><div style="font-size:24px;font-weight:800" class="${younger ? 'c-green' : 'c-red'}">${fmt(Math.abs(hs.difference), 1)} yrs ${younger ? 'younger' : 'older'}</div>
         <div class="tip">based on your last 6 months</div></div></div>`
-      : `<p class="muted">Body Age unlocks after 21 nights of data in 31 days (you have ${hs.recoveriesLast31}).</p>`}
+      : hs.sexKnown ? `<p class="muted">Body Age unlocks after 21 nights of data in 31 days (you have ${hs.recoveriesLast31}).</p>` : '<p class="muted">Google Health doesn\'t share biological sex, and the VO₂max, resting-HR and lean-mass targets depend on it. <button class="btn" data-action="open-settings">Set it in Settings</button></p>'}
       ${hs.calibrating && hs.unlocked ? '<p class="tip">Still calibrating: full accuracy after 90 days of data.</p>' : ''}
     </div>
     <div class="card">
@@ -339,7 +345,7 @@ function metricRow(r) {
     <div class="name">${esc(r.label)}</div>
     <div class="impact ${r.missing ? 'muted' : y < -0.05 ? 'c-green' : y > 0.05 ? 'c-red' : 'muted'}">${r.missing ? 'no data' : `${fmtSigned(y)} yrs`}</div>
     <div class="impactbar">${r.missing ? '' : bar}</div>
-    <div class="detail">${r.missing ? esc(r.tip) : `${unitFmt(r.value)} ${esc(r.unit)} · target ${unitFmt(r.target)}${trendTxt}`}${r.missing ? '' : `<br>${esc(r.tip)}`}</div>
+    <div class="detail">${r.missing ? esc(r.tip) : `${unitFmt(r.value)} ${esc(r.unit)} · target ${unitFmt(r.target)}${trendTxt}`}${r.missing ? '' : `<br>${esc(r.tip)}`}${r.key === 'vo2max' && r.missing && state.analysis?.adaptation.vo2Demographic ? '<br>⚖ Left out: your Cardio Fitness Score is a demographic estimate (from resting HR, age, sex and weight), which Body Age already counts. GPS-tracked runs produce a VO₂max that counts.' : ''}</div>
   </div>`;
 }
 
@@ -545,6 +551,95 @@ function renderJournal(c) {
   </div>`;
 }
 
+function confPill(c) {
+  if (!c || c.level === 'high') return '';
+  return `<span class="pill" title="${esc(c.flags.map((f) => FLAG_INFO[f]?.text || f).join('; '))}">${c.level === 'low' ? 'Low confidence' : 'Medium confidence'}</span>`;
+}
+
+function flagList(conf) {
+  const all = [...new Set([...conf.recovery.flags, ...conf.strain.flags, ...conf.sleep.flags])];
+  if (!all.length) return '';
+  return `<p class="tip" style="margin-top:10px">Confidence notes: ${all.map((f) => `<span title="${esc(f)}">${esc(FLAG_INFO[f]?.text || f)}</span>`).join(' · ')}</p>`;
+}
+
+function qualityLine(day, a) {
+  const q = day.quality || {};
+  const parts = [];
+  parts.push(`${a.device.name}`);
+  if (q.hrvSource) parts.push(`HRV: ${q.hrvSource === 'deep' ? 'deep-sleep RMSSD' : q.hrvSource === 'whole-night' ? 'whole-night RMSSD' : 'nightly RMSSD'}`);
+  if (q.rhrSource) parts.push(`RHR: ${q.rhrSource === 'sleep-hr' ? 'from sleep HR' : 'Fitbit daily value'}`);
+  if (q.hrHours) parts.push(`${q.hrHours.toFixed(0)} h of HR data`);
+  if (q.sleepStaged === false) parts.push('sleep not staged');
+  const low = (q.hrHours && q.hrHours < 16) || q.sleepStaged === false;
+  return `<p class="tip" style="margin-top:10px">${low ? '⚠ Lower confidence: ' : 'Data: '}${esc(parts.join(' · '))}</p>`;
+}
+
+const yes = (v, label = 'Yes') => (v ? `<span class="c-green">${label}</span>` : '<span class="muted">—</span>');
+
+function renderDevices(c) {
+  const a = c.a;
+  const dev = a.device;
+  const chips = [
+    ['GPS', dev.gps], ['SpO₂', dev.spo2], ['ECG', dev.ecg], ['Continuous EDA', dev.eda === 'continuous'], ['EDA scan', dev.eda === 'scan'], ['Screen', dev.display],
+  ].map(([k, v]) => `<span class="pill ${v ? 'green' : ''}" style="${v ? '' : 'opacity:.55'}">${v ? '✓' : '✕'} ${k}</span>`).join(' ');
+  const rows = [
+    ['Heart-rate sampling', '1 s during exercise, about every 5-15 s at rest (developer reports)', 'Continuous PPG, about 26 Hz on 5.0/MG (WHOOP claim)', 'Fitbit minute data is fine for strain and zones but too coarse for beat-to-beat HRV during the day.'],
+    ['HRV', 'RMSSD from 5-min windows in the main sleep (>3 h). Nightly and deep-sleep values.', 'RMSSD in 5-min windows stepping every 30 s over the night, weighted to slow-wave and late sleep', 'WHOOP 4.0 vs ECG: CCC 0.94, error 8.2% (Dial 2025). Fitbit Versa 4 pilot: about 8% high vs ECG (n=8). No study has worn both on the same people, so no fixed conversion exists.'],
+    ['Resting HR', 'Daily value from awake + sleep data', 'Measured during sleep', 'WHOOP 4.0 bias −1.4 bpm. Fitbit Charge 2 −1.1 bpm at rest.'],
+    ['Respiratory rate', 'During deep sleep (light-sleep fallback)', 'During sleep', 'Fitbit error ~0.46 breaths/min. WHOOP bias 1.8% vs PSG.'],
+    ['Skin temperature', 'Nightly change vs personal baseline. Dedicated sensor on Sense 2, Edge and Pixel Watch; device sensor on Air.', 'Nightly change vs baseline', 'Not independently validated for either.'],
+    ['SpO₂', 'Nightly average (red/IR)', 'During sleep', 'Not independently validated for either.'],
+    ['Sleep stages', '4 stages', '4 stages', 'Agreement with a sleep lab (κ): Fitbit Sense 0.42, Charge 5 0.41, WHOOP 4.0 0.37 (Schyvens 2025). All under-detect wake (29-52%).'],
+    ['Exercise HR', 'Wrist PPG (multipath on Pixel Watch 2+)', 'Wrist/bicep PPG', 'Error: Pixel Watch 3 2.7%, Charge 6 5.5%, Pixel Watch 2 6.7%. No independent WHOOP 4.0/5.0 study.'],
+    ['HR zones', 'AZM: fat burn / cardio / peak on heart-rate reserve; cardio and peak count double', '5 zones on % heart-rate reserve; max HR auto-updates', 'Not interchangeable; this app recomputes WHOOP zones from raw HR.'],
+    ['VO₂max', 'Cardio Fitness Score from RHR, age, sex and weight, refined by GPS runs', 'Estimated from strain, zones and recovery; needs 14 recoveries in 21 days', 'Neither independently validated.'],
+    ['Wear and battery', 'Wrist only; 5-10 days on bands, ~1-1.5 days on Pixel Watch', 'Wrist, bicep or apparel; 4-5 days (4.0), 14+ days (5.0/MG)', ''],
+    ['Cost', 'One-off device ($99-$249) plus optional Google Health Premium ($9.99/mo)', 'Membership $199-$359/yr, hardware included', ''],
+  ];
+  return `
+  <div class="grid cols-2">
+    <div class="card">
+      <h2>Your tracker</h2>
+      <div class="row"><div><div style="font-size:22px;font-weight:800">${esc(dev.name)}</div><div class="tip">${esc(dev.launch ? `Launched ${dev.launch}` : '')}${dev.batteryDays ? ` · ~${dev.batteryDays} day battery` : ''}${dev.price ? ` · ${esc(dev.price)}` : ''}</div></div>
+      <button class="btn" data-action="open-settings">Change</button></div>
+      <div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:6px">${chips}</div>
+      <p class="tip"><strong>Tier ${esc(dev.tier)}</strong>: ${esc(TIERS[dev.tier] || '')}</p>
+      ${a.adaptation.deviceSince ? `<p class="tip">Using this tracker since ${esc(a.adaptation.deviceSince)}: older nights are rescaled to it.</p>` : ''}
+      <p class="tip">Skin temperature: ${dev.skinTemp === 'dedicated' ? 'dedicated sensor' : dev.skinTemp === 'device' ? 'device temperature sensor (relative change only)' : 'nightly variation'} · VO₂max: ${dev.vo2 === 'gps' ? 'refined by GPS runs' : 'demographic estimate (no GPS)'}</p>
+      ${dev.notes ? `<p class="tip">${esc(dev.notes)}</p>` : ''}
+      ${dev.verified === false ? '<p class="tip">⚠ Some specs for this model come from secondary sources and aren\'t fully verified.</p>' : ''}
+    </div>
+    <div class="card">
+      <h2>How this app adapts your Fitbit data</h2>
+      <ul class="list">${adaptationNotes(dev.id).map((n) => `<li style="display:block"><strong>${esc(n.area)}</strong><div class="tip">${esc(n.rule)}</div></li>`).join('')}</ul>
+      <p class="tip">Currently: HRV series = <strong>${esc(a.adaptation.hrvSource)}</strong>${a.adaptation.hrvSource === 'deep' ? ` (${Math.round(a.adaptation.deepShare * 100)}% of nights)` : ''} · VO₂max in Body Age: ${a.adaptation.vo2Demographic ? 'excluded (demographic estimate)' : 'run-based values only'} · max HR ${a.maxHr} bpm (${a.adaptation.maxHrSource}).</p>
+    </div>
+  </div>
+
+  <h3 class="section-title">Measurement: Fitbit vs WHOOP</h3>
+  <div class="card" style="overflow-x:auto"><table class="table">
+    <thead><tr><th>Signal</th><th>Fitbit / Pixel Watch</th><th>WHOOP</th><th>Accuracy evidence</th></tr></thead>
+    <tbody>${rows.map((r) => `<tr><td><strong>${esc(r[0])}</strong></td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td class="tip">${esc(r[3])}</td></tr>`).join('')}</tbody>
+  </table></div>
+
+  <h3 class="section-title">Fitbit scores vs WHOOP scores</h3>
+  <div class="card" style="overflow-x:auto"><table class="table">
+    <thead><tr><th>Fitbit / Google Health</th><th>WHOOP</th><th>Difference</th></tr></thead>
+    <tbody>${SCORE_MAP.map((r) => `<tr><td>${esc(r.fitbit)}</td><td>${esc(r.whoop)}</td><td class="tip">${esc(r.diff)}</td></tr>`).join('')}</tbody>
+  </table>
+  <p class="tip">Fitbit's own Readiness, Sleep Score and Cardio Load are not available through the Google Health API, so this app calculates its WHOOP-style scores from the raw signals instead.</p></div>
+
+  <h3 class="section-title">Google tracker lineup (Nov 2026)</h3>
+  <div class="card" style="overflow-x:auto"><table class="table">
+    <thead><tr><th>Device</th><th>Screen</th><th>GPS</th><th>SpO₂</th><th>Skin temp</th><th>EDA</th><th>ECG</th><th>Battery</th></tr></thead>
+    <tbody>${Object.entries(DEVICES).filter(([id]) => id !== 'other').map(([id, d]) => `<tr${id === dev.id ? ' style="background:var(--surface-2)"' : ''}>
+      <td><strong>${esc(d.name)}</strong>${d.verified === false ? ' <span class="tip">*</span>' : ''}</td><td>${yes(d.display)}</td><td>${yes(d.gps)}</td><td>${yes(d.spo2)}</td>
+      <td>${esc(d.skinTemp === 'dedicated' ? 'sensor' : d.skinTemp === 'device' ? 'device' : 'variation')}</td><td>${esc(d.eda || '—')}</td><td>${yes(d.ecg)}</td><td>${d.batteryDays} d</td></tr>`).join('')}
+      <tr><td><strong>${esc(WHOOP.name)}</strong></td><td>${yes(false)}</td><td>${yes(false)}</td><td>${yes(true)}</td><td>sensor</td><td>—</td><td>MG only</td><td>4-14+ d</td></tr>
+    </tbody>
+  </table><p class="tip">* specs from secondary sources, not fully verified. WHOOP: ${esc(WHOOP.sensors)}. ${esc(WHOOP.price)}.</p></div>`;
+}
+
 // ---------------------------------------------------------------- settings dialog
 function openSettings() {
   const s = state.settings;
@@ -555,9 +650,11 @@ function openSettings() {
     <div class="row"><h2>Profile & data</h2><button class="icon-btn" value="close" aria-label="Close">✕</button></div>
     <div class="two">
       <label>Age<input type="number" name="age" min="16" max="100" value="${esc(s.age ?? p.age)}"/></label>
-      <label>Biological sex <select name="sex"><option value="male" ${p.sex === 'male' ? 'selected' : ''}>Male</option><option value="female" ${p.sex === 'female' ? 'selected' : ''}>Female</option></select></label>
+      <label>Biological sex <select name="sex"><option value="" ${!p.sex ? 'selected' : ''}>Not set</option><option value="male" ${p.sex === 'male' ? 'selected' : ''}>Male</option><option value="female" ${p.sex === 'female' ? 'selected' : ''}>Female</option></select></label>
       <label>Max heart rate (optional)<input type="number" name="maxHr" min="120" max="230" placeholder="${state.analysis ? state.analysis.maxHr : 'auto'}" value="${esc(s.maxHr ?? '')}"/></label>
       <label>Body fat % (optional)<input type="number" step="0.1" name="bodyFatPct" min="3" max="60" placeholder="from scale" value="${esc(s.bodyFatPct ?? '')}"/></label>
+      <label>Your tracker<select name="device">${Object.entries(DEVICES).map(([id, d]) => `<option value="${id}" ${p.device === id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select></label>
+      <label>Using this tracker since (optional)<input type="date" name="deviceSince" value="${esc(s.deviceSince || '')}"/></label>
       <label>Usual wake time<input type="time" name="wakeTime" value="${esc(s.wakeTime || '07:00')}"/></label>
       <label>Export intraday times are <select name="hrIsUtc"><option value="1" ${s.hrIsUtc !== false ? 'selected' : ''}>UTC (Fitbit default)</option><option value="0" ${s.hrIsUtc === false ? 'selected' : ''}>Local time</option></select></label>
     </div>
@@ -591,10 +688,13 @@ async function onSettingsAction(action) {
     state.settings = {
       ...state.settings,
       age: Number(fd.get('age')) || null,
-      sex: fd.get('sex'),
+      sex: fd.get('sex') || null,
       maxHr: Number(fd.get('maxHr')) || null,
       bodyFatPct: fd.get('bodyFatPct') === '' ? null : Number(fd.get('bodyFatPct')),
       wakeTime: fd.get('wakeTime') || '07:00',
+      device: fd.get('device') || null,
+      deviceSince: fd.get('deviceSince') || ((fd.get('device') && state.analysis && fd.get('device') !== state.analysis.device.id && state.settings.device)
+        ? state.analysis.latest.date : state.settings.deviceSince || null),
       hrIsUtc: fd.get('hrIsUtc') !== '0',
     };
     lsSet('settings', state.settings);

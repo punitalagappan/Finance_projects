@@ -71,6 +71,7 @@ export async function importFiles(fileList, { maxDays = 200, hrIsUtc = true, onP
           const sum = s.levels && s.levels.summary ? s.levels.summary : {};
           const rec = {
             start: stripZone(s.startTime), end: stripZone(s.endTime), asleepMin: s.minutesAsleep, inBedMin: s.timeInBed,
+            classic: s.type === 'classic' ? true : undefined,
             deepMin: sum.deep?.minutes, remMin: sum.rem?.minutes, lightMin: sum.light?.minutes, awakeMin: sum.wake?.minutes ?? s.minutesAwake,
           };
           const d = get(s.dateOfSleep);
@@ -165,10 +166,21 @@ export async function importFiles(fileList, { maxDays = 200, hrIsUtc = true, onP
             if (isNum(s) && s > 0) get(date).skinTempSd = s;
           }
         }
+      } else if (/^run_vo2_max-.*\.json$/i.test(name)) {
+        // GPS-run VO2max estimates → mark the day's VO2max as measured, not demographic.
+        for (const p of JSON.parse(await f.text())) {
+          const t = parseFitbitStamp(p.dateTime, false);
+          const v = p.value?.runVO2Max ?? p.value?.filteredRunVO2Max;
+          if (isNum(v)) { const d = get(toISODate(t)); d.vo2max = v; d.vo2Estimated = false; }
+        }
+      } else if (/^devices?\.csv$/i.test(name)) {
+        const row = parseCsv(await f.text()).find((r) => /tracker|watch/i.test(`${r.device_type || ''} ${r.type || ''}`)) || {};
+        profile = { ...(profile || {}), deviceName: row.device_version || row.deviceVersion || row.device_name };
       } else if (/^profile\.csv$/i.test(name) || /user.*profile.*\.csv$/i.test(name)) {
         const row = parseCsv(await f.text())[0] || {};
         const dob = row.date_of_birth;
         profile = {
+          ...(profile || {}),
           sex: /female/i.test(row.gender || '') ? 'female' : /male/i.test(row.gender || '') ? 'male' : undefined,
           age: dob ? Math.floor((Date.now() - new Date(dob)) / (365.25 * 86400000)) : undefined,
         };
