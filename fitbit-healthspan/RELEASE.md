@@ -26,7 +26,7 @@ Everything that can be prepared without your Mac and your accounts is already do
 
 **Apple** ([developer.apple.com](https://developer.apple.com))
 1. Enrol in the Apple Developer Program.
-2. Register the App ID `com.vitalspan.app`. No special capabilities are needed; local notifications don't require the Push capability.
+2. Register the App ID `com.vitalspan.app` and enable the **HealthKit** capability. The project already includes `App.entitlements` (read-only HealthKit) and the Health permission text. Local notifications don't need the Push capability.
 3. In App Store Connect, create the app with the name and SKU, and fill in the fields from [`store/APP_REVIEW.md`](store/APP_REVIEW.md) and [`store/listing.json`](store/listing.json).
 
 **Branding (optional)**
@@ -35,13 +35,21 @@ Everything that can be prepared without your Mac and your accounts is already do
 
 ## 2. Build
 ```bash
-npm test             # 27 tests: scoring acceptance checks, Fitbit adaptation rules, store limits
+npm test             # 43 tests: scoring acceptance checks, device adaptation, multi-device merge, Apple Health parsing, store limits
 npm run ios:sync     # bundles the web app → www/, applies Info.plist/pbxproj settings, copies into Xcode
 npm run ios:open     # opens Xcode
 ```
 In Xcode:
 - Select the **App** target → **Signing & Capabilities** → choose your Team.
-- Run on a real iPhone. Check that the onboarding, demo, **Connect** (the Google sheet should return to the app), sync, notifications and **Delete all data** all work.
+- Check that **HealthKit** appears under Signing & Capabilities (it comes from `App.entitlements`).
+- Run on a real iPhone and check that these work:
+  - onboarding and the demo
+  - **Apple Health → Connect** (the permission sheet appears, then each app/device that shares with Apple Health shows up under Devices & sources)
+  - **Fitbit → Connect** (the Google sheet should return to the app)
+  - choosing a device per metric
+  - sync and pull-to-refresh
+  - notifications
+  - **Delete all data**
 
 ## 3. TestFlight → App Store
 1. In Xcode, choose **Product → Archive → Distribute App → App Store Connect**.
@@ -60,6 +68,8 @@ npm test && npm run ios:sync && npm run store:assets   # store:assets needs Play
 |---|---|
 | Scoring engine (shared, tested) | `public/engine/` |
 | On-device Google Health client (PKCE, no secret, no server) | `public/lib/googleHealth.js`, `public/platform.js` |
+| Apple Health connector (one source per app/device in Health) | `public/adapters/healthkit.js` (+ `@capgo/capacitor-health`) |
+| Multi-device merge (per-metric primary, no mixed baselines) | `public/engine/merge.js` |
 | Native shell (Capacitor 8, Swift Package Manager) | `ios/`, `capacitor.config.json` |
 | Release settings (URL scheme, iPhone-only, portrait, encryption flag, privacy manifest) | `scripts/configure-ios.mjs` |
 | Icon / splash / screenshots generator | `scripts/store-assets.cjs`, `scripts/flatten.py` |
@@ -67,7 +77,9 @@ npm test && npm run ios:sync && npm run store:assets   # store:assets needs Play
 | Store listing + review notes | `store/` |
 
 ## Known limits before launch
-- **Device testing:** the Google sign-in round trip and on-device sync have not been run on a physical iPhone. This environment has no Mac, so do that in step 2.
+- **Device testing:** the Google sign-in round trip, the Apple Health permission flow and on-device sync have not been run on a physical iPhone. This environment has no Mac, so do that in step 2.
+- **Apple Health data:** the Apple Health parsing is tested against fixtures shaped like the plugin's output. Real devices can name their source apps differently; any app the app doesn't recognise still works and is labelled with its Apple Health source name.
+- **Oura / WHOOP / Garmin direct cloud APIs** aren't used. Those devices connect through Apple Health. Their own APIs need a server-held client secret, which this no-backend app avoids.
 - **Google Health API field names** come from Google's docs. Check them against a real account (on the web build, `GET /api/raw?type=…` shows raw payloads).
 - **Android** isn't included. Google requires a different sign-in method for Android apps, so it's a separate piece of work. The scoring engine and UI are ready for it.
 - **No background refresh:** the app syncs when opened or brought back to the foreground, or when you pull down to refresh. The morning notification prompts users to open it.

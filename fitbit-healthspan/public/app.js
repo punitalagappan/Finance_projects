@@ -2,17 +2,19 @@ import {
   analyze, recoveryBand, strainBand, sleepBand, stressBand, bedtimeFor, computeHealthspan, healthMonitor, strainTarget,
   BEHAVIORS, behaviorImpacts, isNum, mean, clamp, parseDate, addDays,
   DEVICES, WHOOP, SCORE_MAP, TIERS, FLAG_INFO, detectDevice, adaptationNotes,
+  mergeSources, overridableMetrics, METRIC_LABELS, coverage,
 } from './engine/index.js';
 import { ring, gauge, timeChart, rangeBar } from './ui/charts.js';
 import { idbGet, idbSet, idbDel, lsGet, lsSet } from './ui/store.js';
-import { generateDemo } from './adapters/demo.js';
+import { generateDemoMulti } from './adapters/demo.js';
 import { importFiles } from './adapters/takeout.js';
 import { APP } from './app.config.js';
 import * as platform from './platform.js';
 
 // ---------------------------------------------------------------- state
 const state = {
-  dataset: null, // { days, profile, source, syncedAt }
+  sources: {}, // group → { label, syncedAt, items: [{ id, label, device, days }], profile, warnings }
+  dataset: null, // merged view: { days, primary, profile, syncedAt, warnings }
   settings: lsGet('settings', { age: null, sex: null, maxHr: null, bodyFatPct: null, wakeTime: '07:00', reminders: false, onboarded: false }),
   onboardStep: 0,
   journal: lsGet('journal', {}),
@@ -33,7 +35,11 @@ const HEX = { green: '#2bd47d', yellow: '#f5c84b', red: '#ff5a5f', strain: '#3d8
 // ---------------------------------------------------------------- formatting
 const fmt = (v, dp = 0) => (isNum(v) ? v.toFixed(dp) : '–');
 const fmtH = (min) => (isNum(min) ? `${Math.floor(min / 60)}:${String(Math.round(min % 60)).padStart(2, '0')}` : '–');
-const fmtSigned = (v, dp = 1) => (isNum(v) ? `${v > 0 ? '+' : v < 0 ? '−' : '±'}${Math.abs(v).toFixed(dp)}` : '–');
+const fmtSigned = (v, dp = 1) => {
+  if (!isNum(v)) return '–';
+  const r = Number(v.toFixed(dp));
+  return `${r > 0 ? '+' : r < 0 ? '−' : '±'}${Math.abs(r).toFixed(dp)}`;
+};
 const fmtDate = (s, opts = { weekday: 'short', month: 'short', day: 'numeric' }) => parseDate(s).toLocaleDateString(undefined, opts);
 const shortDate = (s) => parseDate(s).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
@@ -48,11 +54,42 @@ function toast(msg, ms = 3500) {
 }
 
 // ---------------------------------------------------------------- data lifecycle
+// Several sources can be connected at once (Fitbit via Google Health, every device found in Apple Health,
+// a file import, or the demo). Each group holds one or more device "items"; they are merged per metric.
+const GROUP_LABEL = { google: 'Fitbit / Pixel Watch (Google Health)', healthkit: 'Apple Health', import: 'Fitbit export file', demo: 'Demo data' };
+const now = () => new Date().toISOString();
+
+function allItems() {
+  const off = new Set(state.settings.disabledSources || []);
+  return Object.entries(state.sources).flatMap(([group, g]) => g.items.map((it) => ({ ...it, group, enabled: !off.has(it.id) })));
+}
+
+function itemLabel(id) {
+  const it = allItems().find((x) => x.id === id);
+  return it ? it.label : id;
+}
+
+function rebuild(keepDate = true) {
+  const groups = Object.values(state.sources);
+  if (!groups.length) { state.dataset = null; recompute(false); return; }
+  const merged = mergeSources(allItems(), state.settings.sourcePrefs || {});
+  state.dataset = merged.days.length ? {
+    days: merged.days,
+    primary: merged.primary,
+    profile: Object.assign({}, ...groups.map((g) => g.profile || {})),
+    syncedAt: groups.map((g) => g.syncedAt).sort().pop(),
+    warnings: groups.flatMap((g) => g.warnings || []),
+  } : null;
+  recompute(keepDate);
+}
+
 function profile() {
   const s = state.settings;
   const p = state.dataset?.profile || {};
+  const prim = state.dataset?.primary || {};
+  const deviceOf = (id) => allItems().find((x) => x.id === id)?.device;
   return {
-    device: s.device || detectDevice(p.deviceName) || 'other',
+    device: s.device || deviceOf(prim.hrv) || deviceOf(prim.hrMinutes) || detectDevice(p.deviceName) || 'other',
     age: Number(s.age) || p.age || 35,
     sex: s.sex || p.sex || null,
     deviceSince: s.deviceSince || undefined,
@@ -71,35 +108,54 @@ function recompute(keepDate) {
   state.idx = i >= 0 ? i : days.length - 1;
 }
 
-async function setDataset(ds, { persist = true } = {}) {
-  state.dataset = ds;
-  if (ds.journal && !Object.keys(state.journal).length) {
-    state.journal = ds.journal;
-    lsSet('journal', state.journal);
+async function persistSources() { await idbSet('sources', state.sources); }
+
+/** Add or replace a source group. Real data replaces the demo (and its sample journal). */
+async function setSource(group, data) {
+  if (group !== 'demo' && state.sources.demo) {
+    delete state.sources.demo;
+    state.journal = {};
+    lsSet('journal', {});
   }
-  recompute(false);
-  if (persist) await idbSet('dataset', ds);
+  state.sources[group] = { label: GROUP_LABEL[group], syncedAt: now(), ...data };
+  if (data.journal && !Object.keys(state.journal).length) { state.journal = data.journal; lsSet('journal', state.journal); }
+  delete state.sources[group].journal;
+  await persistSources();
+  rebuild(true);
+  render();
+  updateReminders();
+}
+
+async function removeSource(group) {
+  delete state.sources[group];
+  if (group === 'google' && state.config.connected) { await platform.disconnect(); state.config.connected = false; }
+  await persistSources();
+  rebuild(false);
   render();
   updateReminders();
 }
 
 async function loadDemo() {
-  const demo = generateDemo();
-  await setDataset({ ...demo, source: 'demo', syncedAt: new Date().toISOString() });
-  toast('Demo data loaded: 210 days for a 34-year-old');
+  const demo = generateDemoMulti();
+  if (Object.keys(state.sources).some((g) => g !== 'demo')) { toast('Demo is only available when no real device is connected.'); return; }
+  await setSource('demo', { items: demo.sources, profile: demo.profile, journal: demo.journal });
+  toast('Demo loaded: a Fitbit Charge 6 and an Oura Ring, 210 days');
 }
 
+const setBusy = (msg) => { state.busy = msg; const b = $('#busy-msg'); if (b) b.textContent = msg; else render(); };
+
 async function syncGoogle({ quiet = false } = {}) {
-  if (!quiet) { state.busy = 'Syncing from Google Health… (the first sync can take a minute or two)'; render(); }
+  if (!quiet) setBusy('Syncing Fitbit from Google Health… (the first sync can take a minute or two)');
   try {
-    const json = await platform.sync({ days: 200, onStep: (s) => { const b = $('#busy-msg'); if (b) b.textContent = `Syncing ${s}…`; } });
+    const json = await platform.sync({ days: 200, onStep: (st) => { if (!quiet) setBusy(`Syncing ${st}…`); } });
     if (!json.days.length) throw new Error(`No data returned. ${json.warnings.join('; ')}`);
-    if (state.dataset?.source === 'demo') { state.journal = {}; lsSet('journal', {}); }
-    await setDataset({ days: json.days, profile: json.profile, source: 'google', syncedAt: new Date().toISOString(), warnings: json.warnings });
-    if (!quiet) toast(json.warnings.length ? `Synced ${json.days.length} days (${json.warnings.length} data types unavailable)` : `Synced ${json.days.length} days`);
+    const name = json.profile?.deviceName;
+    const device = detectDevice(name) && detectDevice(name) !== 'other' ? detectDevice(name) : (state.sources.google?.items[0]?.device || 'charge-6');
+    await setSource('google', { items: [{ id: 'google', label: name ? `${name} (Fitbit)` : 'Fitbit', device, days: json.days }], profile: json.profile, warnings: json.warnings });
+    if (!quiet) toast(json.warnings.length ? `Synced ${json.days.length} days from Fitbit (${json.warnings.length} data types unavailable)` : `Synced ${json.days.length} days from Fitbit`);
   } catch (e) {
     if (e.status === 401) state.config.connected = false;
-    toast(`Sync failed: ${e.message}`, 7000);
+    toast(`Fitbit sync failed: ${e.message}`, 7000);
   } finally {
     state.busy = null;
     render();
@@ -119,6 +175,32 @@ async function connectGoogle() {
   }
 }
 
+async function syncHealth({ quiet = false } = {}) {
+  if (!quiet) setBusy('Reading Apple Health…');
+  try {
+    platform.tap();
+    const items = await platform.syncHealthKit({ days: 200, onStep: (st) => { if (!quiet) setBusy(st); } });
+    const useful = items.filter((it) => it.days.length);
+    if (!useful.length) {
+      toast('No data found in Apple Health. Check access in the Health app → Sharing → Apps → Vitalspan.', 9000);
+      return;
+    }
+    await setSource('healthkit', { items: useful });
+    if (!quiet) toast(`Apple Health: found ${useful.map((i) => i.label).join(', ')}`);
+  } catch (e) {
+    toast(`Apple Health: ${e.message}`, 7000);
+  } finally {
+    state.busy = null;
+    render();
+  }
+}
+
+async function syncAll({ quiet = false } = {}) {
+  if (state.config.connected) await syncGoogle({ quiet });
+  if (state.sources.healthkit && platform.healthKitSupported()) await syncHealth({ quiet: true });
+}
+
+const canSync = () => state.config.connected || (state.sources.healthkit && platform.healthKitSupported());
 const isStale = () => !state.dataset?.syncedAt || Date.now() - new Date(state.dataset.syncedAt) > 60 * 60 * 1000;
 
 async function updateReminders() {
@@ -131,18 +213,20 @@ async function updateReminders() {
 
 async function importFromFiles(files) {
   if (!files || !files.length) return;
-  state.busy = `Reading ${files.length} files…`;
-  render();
+  setBusy(`Reading ${files.length} files…`);
   try {
     const res = await importFiles(files, {
       maxDays: 200,
       hrIsUtc: state.settings.hrIsUtc !== false,
-      onProgress: (n, total) => { state.busy = `Reading files… ${n}/${total}`; const b = $('#busy-msg'); if (b) b.textContent = state.busy; },
+      onProgress: (n, total) => setBusy(`Reading files… ${n}/${total}`),
     });
     if (!res.days.length) throw new Error(res.warnings.join('; '));
-    if (state.dataset?.source === 'demo') { state.journal = {}; lsSet('journal', {}); }
-    if (res.profile) state.settings = { ...state.settings, ...Object.fromEntries(Object.entries(res.profile).filter(([k, v]) => v != null && !state.settings[k])) };
-    await setDataset({ days: res.days, profile: res.profile || {}, journal: res.journal, source: 'import', syncedAt: new Date().toISOString(), warnings: res.warnings });
+    if (res.profile) state.settings = { ...state.settings, ...Object.fromEntries(Object.entries(res.profile).filter(([k, v]) => v != null && !state.settings[k] && k !== 'deviceName')) };
+    const name = res.profile?.deviceName;
+    await setSource('import', {
+      items: [{ id: 'import', label: name ? `${name} (export)` : 'Fitbit export', device: detectDevice(name) || 'other', days: res.days }],
+      profile: res.profile || {}, journal: res.journal, warnings: res.warnings,
+    });
     toast(`Imported ${res.days.length} days${res.warnings.length ? ` (${res.warnings.length} warnings)` : ''}`);
   } catch (e) {
     toast(`Import failed: ${e.message}`, 7000);
@@ -153,10 +237,10 @@ async function importFromFiles(files) {
 }
 
 function exportData() {
-  const blob = new Blob([JSON.stringify({ ...state.dataset, profile: profile(), journal: state.journal })], { type: 'application/json' });
+  const blob = new Blob([JSON.stringify({ days: state.dataset.days, profile: profile(), journal: state.journal })], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `fitbit-${state.analysis.latest.date}.healthspan.json`;
+  a.download = `vitalspan-${state.analysis.latest.date}.healthspan.json`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
@@ -184,7 +268,7 @@ function render() {
   $('#tabs').hidden = !has;
   $('#tabbar').hidden = !has;
   $('#datepick').hidden = !has || ['more', 'devices'].includes(state.tab);
-  $('#sync-btn').hidden = !(has && state.config.connected);
+  $('#sync-btn').hidden = !(has && canSync());
   const MORE = ['stress', 'health', 'trends', 'journal', 'devices', 'more'];
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === state.tab));
   document.querySelectorAll('#tabbar button').forEach((b) => b.classList.toggle('active', b.dataset.tab === state.tab || (b.dataset.tab === 'more' && MORE.includes(state.tab))));
@@ -203,18 +287,28 @@ function render() {
 
 function sourceFooter() {
   const ds = state.dataset;
-  const label = { demo: 'Demo data', google: 'Google Health API', import: 'Imported export' }[ds.source] || ds.source;
-  return `<p class="note">Source: ${esc(label)} · ${ds.days.length} days · updated ${new Date(ds.syncedAt).toLocaleString()}.
+  const devices = allItems().filter((i) => i.enabled).map((i) => i.label);
+  return `<p class="note">Sources: ${esc(devices.join(', '))} · ${ds.days.length} days · updated ${new Date(ds.syncedAt).toLocaleString()}.
     ${esc(APP.name)} scores are wellness estimates built from published research. They are not a medical device and not medical advice. <a href="${APP.privacyUrl}">Privacy</a></p>`;
 }
 
-function connectCard() {
+function addSourceCards({ demo = true } = {}) {
   const g = state.config;
-  const action = g.available
-    ? (g.connected ? '<button class="btn primary" data-action="sync">Sync now</button>' : '<button class="btn primary" data-action="connect">Connect</button>')
+  const hkOk = platform.healthKitSupported();
+  const hasHK = Boolean(state.sources.healthkit);
+  const fitbitBtn = g.available
+    ? (g.connected ? '<button class="btn" data-action="sync">Sync</button>' : '<button class="btn primary" data-action="connect">Connect</button>')
     : '<button class="btn" disabled>Unavailable</button>';
-  return `<div class="card"><div><strong>Connect Fitbit (Google Health)</strong><div class="tip">Sign in with the Google account your Fitbit or Pixel Watch uses. Data goes straight from Google to this ${platform.isNative ? 'phone' : 'computer'}; we never see it.
-    ${g.available ? '' : platform.isNative ? 'Google sign-in is not enabled in this build.' : 'Needs a Google Cloud OAuth client in <code>.env</code> (see README).'}</div></div>${action}</div>`;
+  const hkBtn = hkOk ? `<button class="btn ${hasHK ? '' : 'primary'}" data-action="connect-health">${hasHK ? 'Re-scan' : 'Connect'}</button>` : '<button class="btn" disabled>iPhone app</button>';
+  const realConnected = Object.keys(state.sources).some((k) => k !== 'demo');
+  return `
+    <div class="card src-card"><div class="src-logo" style="background:#00b0b9">F</div><div><strong>Fitbit or Pixel Watch</strong><div class="tip">Sign in with the Google account your device uses (Google Health). ${g.connected ? '<b class="c-green">Connected.</b>' : ''}
+      ${g.available ? '' : platform.isNative ? 'Google sign-in is not enabled in this build.' : 'Needs a Google Cloud OAuth client in <code>.env</code> (see README).'}</div></div>${fitbitBtn}</div>
+    <div class="card src-card"><div class="src-logo health">♥</div><div><strong>Apple Health</strong><div class="tip">Apple Watch, plus Oura, WHOOP, Garmin, Withings, Polar, Ultrahuman and any app that shares with Apple Health. ${hasHK ? `<b class="c-green">${state.sources.healthkit.items.length} device${state.sources.healthkit.items.length === 1 ? '' : 's'} found.</b>` : ''}</div></div>${hkBtn}</div>
+    <div class="card src-card"><div class="src-logo" style="background:#3d4a59">⇪</div><div><strong>Import a Fitbit export</strong><div class="tip">Google Takeout / Fitbit export files, processed on this device.</div></div>
+      <label class="btn">Choose<input type="file" id="import-dir" ${platform.isNative ? '' : 'webkitdirectory'} multiple hidden /></label></div>
+    ${demo && !realConnected ? `<div class="card src-card"><div class="src-logo" style="background:#2a3038">▶</div><div><strong>Try the demo</strong><div class="tip">A Fitbit Charge 6 and an Oura Ring worn together for 210 days. Shows how multiple devices merge.</div></div>
+      <button class="btn" data-action="demo">Try demo</button></div>` : ''}`;
 }
 
 function renderWelcome() {
@@ -222,13 +316,7 @@ function renderWelcome() {
     <img src="icon.svg" width="56" height="56" alt="" />
     <h1>${esc(APP.name)}</h1>
     <p>${esc(APP.tagline)}</p>
-    <div class="choice">
-      ${connectCard()}
-      <div class="card"><div><strong>Import a Fitbit export</strong><div class="tip">Choose the unzipped Google Takeout / Fitbit export ${platform.isNative ? 'files' : 'folder'}. Everything is processed on this device.</div></div>
-        <label class="btn">Choose<input type="file" id="import-dir" ${platform.isNative ? '' : 'webkitdirectory'} multiple hidden /></label></div>
-      <div class="card"><div><strong>Explore with demo data</strong><div class="tip">210 days of realistic sample data, including a cold and a few late nights.</div></div>
-        <button class="btn" data-action="demo">Try demo</button></div>
-    </div>
+    <div class="choice">${addSourceCards()}</div>
   </div>`;
 }
 
@@ -268,7 +356,7 @@ function renderOnboarding() {
         <div class="two">
           <label>Age<input type="number" name="age" min="16" max="100" required value="${esc(s.age ?? '')}"/></label>
           <label>Biological sex<select name="sex" required><option value="">Select</option><option value="female" ${s.sex === 'female' ? 'selected' : ''}>Female</option><option value="male" ${s.sex === 'male' ? 'selected' : ''}>Male</option></select></label>
-          <label>Your tracker<select name="device">${Object.entries(DEVICES).map(([id, d]) => `<option value="${id}" ${(s.device || 'charge-6') === id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select></label>
+
           <label>Usual wake time<input type="time" name="wakeTime" value="${esc(s.wakeTime || '07:00')}"/></label>
         </div>
         ${platform.isNative ? `<label class="checkline"><input type="checkbox" name="reminders" ${s.reminders ? 'checked' : ''}/> Remind me to wind down before bed and when Recovery is ready</label>` : ''}
@@ -276,15 +364,10 @@ function renderOnboarding() {
       ${dots}<button class="btn primary wide" data-action="onboard-profile">Continue</button></div>`;
   }
   return `<div class="onboard">
-    <h1>Add your data</h1>
-    <div class="choice">
-      ${connectCard()}
-      <div class="card"><div><strong>Import a Fitbit export</strong><div class="tip">Google Takeout / Fitbit export files, processed on-device.</div></div>
-        <label class="btn">Choose<input type="file" id="import-dir" ${platform.isNative ? '' : 'webkitdirectory'} multiple hidden /></label></div>
-      <div class="card"><div><strong>Try the demo first</strong><div class="tip">Explore every screen with sample data. You can connect later in Settings.</div></div>
-        <button class="btn" data-action="demo">Try demo</button></div>
-    </div>
-    ${dots}<p class="tip">Before connecting: open the Google Health app once and make sure your Fitbit account has moved to your Google account.</p></div>`;
+    <h1>Connect your devices</h1>
+    <p class="tip">Connect as many as you wear. ${esc(APP.name)} picks the best device for each metric, and you can change it later under More → Devices.</p>
+    <div class="choice">${addSourceCards()}</div>
+    ${dots}<p class="tip">Fitbit users: open the Google Health app once first so your Fitbit account has moved to your Google account.</p></div>`;
 }
 
 function renderMore() {
@@ -294,13 +377,13 @@ function renderMore() {
     ${item('health', 'Health Monitor', 'Overnight vitals vs your normal range', 'c-green')}
     ${item('trends', 'Trends', '30/90/180-day charts for every metric', 'c-strain')}
     ${item('journal', 'Journal', 'Log habits and see what moves your recovery', 'c-sleep')}
-    ${item('devices', 'Your tracker', 'Sensors, accuracy and how your data is adapted', 'c-age')}
+    ${item('devices', 'Devices & sources', 'Connect devices, choose a device per metric, accuracy notes', 'c-age')}
     <button class="more-item" data-action="open-settings"><span><b>Settings & data</b><span class="tip">Profile, sync, reminders, export, delete</span></span><span class="chev">›</span></button>
     <a class="more-item" href="${APP.privacyUrl}"><span><b>Privacy policy</b><span class="tip">No account, no tracking, data stays on device</span></span><span class="chev">›</span></a>
     <a class="more-item" href="${APP.termsUrl}"><span><b>Terms & medical disclaimer</b></span><span class="chev">›</span></a>
     <a class="more-item" href="mailto:${APP.supportEmail}"><span><b>Contact support</b><span class="tip">${esc(APP.supportEmail)}</span></span><span class="chev">›</span></a>
   </div>
-  <p class="note">${esc(APP.name)} ${esc(APP.version)}. Not affiliated with or endorsed by Google, Fitbit or WHOOP. Method references are listed on each screen.</p>`;
+  <p class="note">${esc(APP.name)} ${esc(APP.version)}. Not affiliated with or endorsed by Apple, Google, Fitbit, Oura, WHOOP or Garmin. Method references are listed on each screen.</p>`;
 }
 
 // ----- Today
@@ -666,9 +749,13 @@ function flagList(conf) {
 function qualityLine(day, a) {
   const q = day.quality || {};
   const parts = [];
-  parts.push(`${a.device.name}`);
-  if (q.hrvSource) parts.push(`HRV: ${q.hrvSource === 'deep' ? 'deep-sleep RMSSD' : q.hrvSource === 'whole-night' ? 'whole-night RMSSD' : 'nightly RMSSD'}`);
-  if (q.rhrSource) parts.push(`RHR: ${q.rhrSource === 'sleep-hr' ? 'from sleep HR' : 'Fitbit daily value'}`);
+  const src = day.sources || {};
+  const named = [['hrv', 'HRV'], ['sleep', 'Sleep'], ['hrMinutes', 'HR']].filter(([k]) => src[k]).map(([k, l]) => `${l}: ${itemLabel(src[k])}`);
+  if (Object.keys(state.sources).length && allItems().filter((i) => i.enabled).length > 1) parts.push(...named);
+  else parts.push(`${a.device.name}`);
+  if (q.hrvSource && q.hrvSource !== 'single') parts.push(`HRV type: ${q.hrvSource === 'deep' ? 'deep-sleep RMSSD' : 'whole-night RMSSD'}`);
+  if (day.sleepFallback) parts.push('sleep from backup device');
+  if (q.rhrSource) parts.push(`RHR: ${q.rhrSource === 'sleep-hr' ? 'from sleep HR' : 'device-reported'}`);
   if (q.hrHours) parts.push(`${q.hrHours.toFixed(0)} h of HR data`);
   if (q.sleepStaged === false) parts.push('sleep not staged');
   const low = (q.hrHours && q.hrHours < 16) || q.sleepStaged === false;
@@ -676,6 +763,50 @@ function qualityLine(day, a) {
 }
 
 const yes = (v, label = 'Yes') => (v ? `<span class="c-green">${label}</span>` : '<span class="muted">—</span>');
+
+const METRIC_CHIPS = [['sleep', 'Sleep'], ['hrv', 'HRV'], ['rhr', 'Resting HR'], ['respRate', 'Breathing'], ['spo2', 'SpO₂'], ['skinTempDelta', 'Temp'], ['hrMinutes', 'Heart rate'], ['steps', 'Steps'], ['workouts', 'Workouts'], ['vo2max', 'VO₂max'], ['bodyFatPct', 'Body fat']];
+
+function renderSources(c) {
+  const items = allItems();
+  const primary = state.dataset?.primary || {};
+  const prefs = state.settings.sourcePrefs || {};
+  const groups = Object.entries(state.sources);
+  const groupCard = ([gid, g]) => `<div class="card">
+    <div class="row"><div><strong>${esc(g.label || GROUP_LABEL[gid])}</strong><div class="tip">Updated ${new Date(g.syncedAt).toLocaleString()}</div></div>
+      <div class="actions">${gid === 'google' && state.config.connected ? '<button class="btn" data-action="sync">Sync</button>' : ''}${gid === 'healthkit' && platform.healthKitSupported() ? '<button class="btn" data-action="connect-health">Re-scan</button>' : ''}
+      <button class="btn danger" data-action="remove-source" data-group="${gid}">Remove</button></div></div>
+    ${g.items.map((it) => {
+      const enabled = !(state.settings.disabledSources || []).includes(it.id);
+      const prof = DEVICES[it.device] || DEVICES.other;
+      const chips = METRIC_CHIPS.map(([k, label]) => {
+        const cov = coverage(it, k, 60);
+        return cov > 0 ? `<span class="chip ${Object.values(primary).includes(it.id) && primary[k] === it.id ? 'on' : ''}">${label}${primary[k] === it.id ? ' ✓' : ''}</span>` : '';
+      }).join('');
+      return `<div class="device-row"><div><b>${esc(it.label)}</b> <span class="tip">${esc(prof.name)} · ${it.days.length} days</span><div class="chips">${chips || '<span class="tip">No usable data yet</span>'}</div></div>
+        <button class="switch ${enabled ? 'on' : ''}" data-action="toggle-source" data-id="${esc(it.id)}" aria-label="Use ${esc(it.label)}" aria-pressed="${enabled}"></button></div>`;
+    }).join('')}
+  </div>`;
+
+  const prefRows = overridableMetrics().map((m) => {
+    const opts = items.filter((it) => it.enabled && coverage(it, m, 400) > 0);
+    if (!opts.length) return '';
+    const short = (id) => { const it = items.find((x) => x.id === id); return it ? (DEVICES[it.device] && it.device !== 'other' ? DEVICES[it.device].name : it.label) : id; };
+    const auto = primary[m] && !prefs[m] ? `: ${esc(short(primary[m]))}` : '';
+    return `<div class="pref-row"><span>${esc(METRIC_LABELS[m])}</span><select data-pref="${m}">
+      <option value="">Automatic${auto}</option>
+      ${opts.map((it) => `<option value="${esc(it.id)}" ${prefs[m] === it.id ? 'selected' : ''}>${esc(short(it.id))}</option>`).join('')}
+    </select></div>`;
+  }).join('');
+
+  return `
+  <h3 class="section-title" style="margin-top:4px">Connected devices</h3>
+  <div class="stack">${groups.map(groupCard).join('') || '<div class="card"><p class="muted">No devices connected.</p></div>'}</div>
+  ${items.filter((i) => i.enabled).length > 1 ? `<h3 class="section-title">Which device is used for each metric</h3>
+  <div class="card">${prefRows}
+    <p class="tip">Automatic picks the device with the best recent coverage (rings and bands are preferred overnight). Overnight vitals always come from one device, never mixed night-to-night, so your baselines stay consistent. Steps use the highest count, duplicate workouts are merged, and gaps in heart rate are filled from your other devices.</p></div>` : ''}
+  <h3 class="section-title">Add a device</h3>
+  <div class="choice" style="margin-top:0">${addSourceCards({ demo: false })}</div>`;
+}
 
 function renderDevices(c) {
   const a = c.a;
@@ -697,11 +828,12 @@ function renderDevices(c) {
     ['Wear and battery', 'Wrist only; 5-10 days on bands, ~1-1.5 days on Pixel Watch', 'Wrist, bicep or apparel; 4-5 days (4.0), 14+ days (5.0/MG)', ''],
     ['Cost', 'One-off device ($99-$249) plus optional Google Health Premium ($9.99/mo)', 'Membership $199-$359/yr, hardware included', ''],
   ];
-  return `
+  return `${renderSources(c)}
+  <h3 class="section-title">Main device: how its data is adapted</h3>
   <div class="grid cols-2">
     <div class="card">
-      <h2>Your tracker</h2>
-      <div class="row"><div><div style="font-size:22px;font-weight:800">${esc(dev.name)}</div><div class="tip">${esc(dev.launch ? `Launched ${dev.launch}` : '')}${dev.batteryDays ? ` · ~${dev.batteryDays} day battery` : ''}${dev.price ? ` · ${esc(dev.price)}` : ''}</div></div>
+      <h2>Main device</h2>
+      <div class="row"><div><div style="font-size:22px;font-weight:800">${esc(dev.name)}</div><div class="tip">${esc([dev.launch && `Launched ${dev.launch}`, dev.batteryDays && `~${dev.batteryDays} day battery`, dev.price].filter(Boolean).join(' · '))}</div></div>
       <button class="btn" data-action="open-settings">Change</button></div>
       <div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:6px">${chips}</div>
       <p class="tip"><strong>Tier ${esc(dev.tier)}</strong>: ${esc(TIERS[dev.tier] || '')}</p>
@@ -717,28 +849,28 @@ function renderDevices(c) {
     </div>
   </div>
 
-  <h3 class="section-title">Measurement: Fitbit vs WHOOP</h3>
-  <div class="card" style="overflow-x:auto"><table class="table">
+  <details class="card fold"><summary><strong>Measurement compared: Fitbit vs a dedicated recovery band</strong></summary><div style="overflow-x:auto;margin-top:10px"><table class="table">
     <thead><tr><th>Signal</th><th>Fitbit / Pixel Watch</th><th>WHOOP (for comparison)</th><th>Accuracy evidence</th></tr></thead>
     <tbody>${rows.map((r) => `<tr><td><strong>${esc(r[0])}</strong></td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td class="tip">${esc(r[3])}</td></tr>`).join('')}</tbody>
   </table></div>
 
-  <h3 class="section-title">Fitbit scores vs WHOOP scores</h3>
-  <div class="card" style="overflow-x:auto"><table class="table">
+  </details>
+  <details class="card fold"><summary><strong>Fitbit's own scores compared</strong></summary><div style="overflow-x:auto;margin-top:10px"><table class="table">
     <thead><tr><th>Fitbit / Google Health</th><th>WHOOP</th><th>Difference</th></tr></thead>
     <tbody>${SCORE_MAP.map((r) => `<tr><td>${esc(r.fitbit)}</td><td>${esc(r.whoop)}</td><td class="tip">${esc(r.diff)}</td></tr>`).join('')}</tbody>
   </table>
   <p class="tip">Fitbit's own Readiness, Sleep Score and Cardio Load are not available through the Google Health API, so this app calculates its own scores from the raw signals instead.</p></div>
 
-  <h3 class="section-title">Google tracker lineup (Nov 2026)</h3>
-  <div class="card" style="overflow-x:auto"><table class="table">
+  </details>
+  <details class="card fold"><summary><strong>Device capability table</strong></summary><div style="overflow-x:auto;margin-top:10px"><table class="table">
     <thead><tr><th>Device</th><th>Screen</th><th>GPS</th><th>SpO₂</th><th>Skin temp</th><th>EDA</th><th>ECG</th><th>Battery</th></tr></thead>
     <tbody>${Object.entries(DEVICES).filter(([id]) => id !== 'other').map(([id, d]) => `<tr${id === dev.id ? ' style="background:var(--surface-2)"' : ''}>
       <td><strong>${esc(d.name)}</strong>${d.verified === false ? ' <span class="tip">*</span>' : ''}</td><td>${yes(d.display)}</td><td>${yes(d.gps)}</td><td>${yes(d.spo2)}</td>
-      <td>${esc(d.skinTemp === 'dedicated' ? 'sensor' : d.skinTemp === 'device' ? 'device' : 'variation')}</td><td>${esc(d.eda || '—')}</td><td>${yes(d.ecg)}</td><td>${d.batteryDays} d</td></tr>`).join('')}
+      <td>${esc(!d.skinTemp ? '—' : d.skinTemp === 'dedicated' ? 'sensor' : d.skinTemp === 'device' ? 'device' : 'variation')}</td><td>${esc(d.eda || '—')}</td><td>${yes(d.ecg)}</td><td>${d.batteryDays} d</td></tr>`).join('')}
       <tr><td><strong>${esc(WHOOP.name)}</strong></td><td>${yes(false)}</td><td>${yes(false)}</td><td>${yes(true)}</td><td>sensor</td><td>—</td><td>MG only</td><td>4-14+ d</td></tr>
     </tbody>
-  </table><p class="tip">* specs from secondary sources, not fully verified. WHOOP: ${esc(WHOOP.sensors)}. ${esc(WHOOP.price)}.</p></div>`;
+  </table><p class="tip">* specs from secondary sources, not fully verified. WHOOP: ${esc(WHOOP.sensors)}. ${esc(WHOOP.price)}.</p></div>
+  </details>`;
 }
 
 // ---------------------------------------------------------------- settings dialog
@@ -755,7 +887,7 @@ function openSettings() {
       <label>Biological sex <select name="sex"><option value="" ${!p.sex ? 'selected' : ''}>Not set</option><option value="male" ${p.sex === 'male' ? 'selected' : ''}>Male</option><option value="female" ${p.sex === 'female' ? 'selected' : ''}>Female</option></select></label>
       <label>Max heart rate (optional)<input type="number" name="maxHr" min="120" max="230" placeholder="${state.analysis ? state.analysis.maxHr : 'auto'}" value="${esc(s.maxHr ?? '')}"/></label>
       <label>Body fat % (optional)<input type="number" step="0.1" name="bodyFatPct" min="3" max="60" placeholder="from scale" value="${esc(s.bodyFatPct ?? '')}"/></label>
-      <label>Your tracker<select name="device">${Object.entries(DEVICES).map(([id, d]) => `<option value="${id}" ${p.device === id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select></label>
+      <label>Main device (device-specific rules)<select name="device"><option value="" ${!s.device ? 'selected' : ''}>Automatic (${esc((DEVICES[p.device] || DEVICES.other).name)})</option>${Object.entries(DEVICES).map(([id, d]) => `<option value="${id}" ${s.device === id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select></label>
       <label>Using this tracker since (optional)<input type="date" name="deviceSince" value="${esc(s.deviceSince || '')}"/></label>
       <label>Usual wake time<input type="time" name="wakeTime" value="${esc(s.wakeTime || '07:00')}"/></label>
       <label>Export intraday times are <select name="hrIsUtc"><option value="1" ${s.hrIsUtc !== false ? 'selected' : ''}>UTC (Fitbit default)</option><option value="0" ${s.hrIsUtc === false ? 'selected' : ''}>Local time</option></select></label>
@@ -771,6 +903,9 @@ function openSettings() {
           : '<button class="btn" value="connect">Connect Google Health</button>')
         : `<span class="tip">${native ? 'Google sign-in is not enabled in this build.' : 'Not configured. Add a Google OAuth client to <code>.env</code> and restart the server (see README).'}</span>`}
     </div>
+    <strong>Apple Health</strong>
+    <div class="actions">${platform.healthKitSupported() ? `<button class="btn" value="health">${state.sources.healthkit ? 'Re-scan Apple Health' : 'Connect Apple Health'}</button>` : '<span class="tip">Available in the iPhone app.</span>'}
+      <button class="btn" value="devices">Devices & sources</button></div>
     ${native ? `<label class="checkline"><input type="checkbox" name="reminders" ${s.reminders ? 'checked' : ''}/> Bedtime and morning reminders</label>` : ''}
     <strong>Files</strong>
     <div class="actions">
@@ -809,7 +944,9 @@ async function onSettingsAction(action) {
     render();
     updateReminders();
     toast('Profile saved');
-  } else if (action === 'sync') await syncGoogle();
+  } else if (action === 'sync') await syncAll();
+  else if (action === 'health') await syncHealth();
+  else if (action === 'devices') { state.tab = 'devices'; render(); window.scrollTo(0, 0); }
   else if (action === 'connect') await connectGoogle();
   else if (action === 'logout') {
     await platform.disconnect();
@@ -822,7 +959,9 @@ async function onSettingsAction(action) {
     if (!confirm(`Delete all health data, journal and settings from this device${state.config.connected ? ' and revoke Google access' : ''}? This cannot be undone.`)) return;
     if (state.config.connected) await platform.disconnect();
     await idbDel('dataset');
+    await idbDel('sources');
     localStorage.clear();
+    state.sources = {};
     state.dataset = null;
     state.analysis = null;
     state.journal = {};
@@ -857,7 +996,16 @@ document.addEventListener('click', async (e) => {
   if (a === 'next-day' && state.idx < state.analysis.days.length - 1) { state.idx++; render(); }
   if (a === 'open-settings') openSettings();
   if (a === 'demo') await loadDemo();
-  if (a === 'sync') await syncGoogle();
+  if (a === 'sync') await syncAll();
+  if (a === 'connect-health') await syncHealth();
+  if (a === 'remove-source') { if (confirm(`Remove ${GROUP_LABEL[t.dataset.group] || 'this source'} and its data from this device?`)) await removeSource(t.dataset.group); }
+  if (a === 'toggle-source') {
+    const off = new Set(state.settings.disabledSources || []);
+    off.has(t.dataset.id) ? off.delete(t.dataset.id) : off.add(t.dataset.id);
+    state.settings.disabledSources = [...off];
+    lsSet('settings', state.settings);
+    rebuild(true); render();
+  }
   if (a === 'connect') await connectGoogle();
   if (a === 'onboard-next') { platform.tap(); state.onboardStep++; render(); window.scrollTo(0, 0); }
   if (a === 'onboard-profile') {
@@ -866,7 +1014,7 @@ document.addEventListener('click', async (e) => {
     const fd = new FormData(f);
     state.settings = {
       ...state.settings,
-      age: Number(fd.get('age')), sex: fd.get('sex'), device: fd.get('device'), wakeTime: fd.get('wakeTime') || '07:00',
+      age: Number(fd.get('age')), sex: fd.get('sex'), wakeTime: fd.get('wakeTime') || '07:00',
       reminders: fd.get('reminders') === 'on', onboarded: true,
     };
     if (state.settings.reminders) await platform.requestNotificationPermission();
@@ -891,6 +1039,15 @@ document.addEventListener('change', (e) => {
     $('#settings').open && $('#settings').close();
     importFromFiles(e.target.files);
   }
+  if (e.target.dataset && e.target.dataset.pref) {
+    const prefs = { ...(state.settings.sourcePrefs || {}) };
+    if (e.target.value) prefs[e.target.dataset.pref] = e.target.value; else delete prefs[e.target.dataset.pref];
+    state.settings.sourcePrefs = prefs;
+    lsSet('settings', state.settings);
+    rebuild(true);
+    render();
+    toast('Source updated: scores recalculated');
+  }
   if (e.target.id === 'consent') {
     state.settings.consent = e.target.checked;
     lsSet('settings', state.settings);
@@ -908,8 +1065,8 @@ document.addEventListener('change', (e) => {
 let pullStart = null;
 document.addEventListener('touchstart', (e) => { pullStart = window.scrollY <= 0 ? e.touches[0].clientY : null; }, { passive: true });
 document.addEventListener('touchend', (e) => {
-  if (pullStart == null || !state.config.connected || state.busy) return;
-  if (e.changedTouches[0].clientY - pullStart > 110) { platform.tap(); syncGoogle(); }
+  if (pullStart == null || !canSync() || state.busy) return;
+  if (e.changedTouches[0].clientY - pullStart > 110) { platform.tap(); syncAll(); }
   pullStart = null;
 }, { passive: true });
 
@@ -935,11 +1092,18 @@ document.addEventListener('keydown', (e) => {
     history.replaceState(null, '', '/');
   }
 
-  const saved = await idbGet('dataset');
-  if (saved?.days?.length) {
-    state.dataset = saved;
+  state.sources = (await idbGet('sources')) || {};
+  const legacy = await idbGet('dataset'); // pre-multi-device single dataset → migrate to a source group
+  if (legacy?.days?.length && !Object.keys(state.sources).length) {
+    const group = ['google', 'import', 'demo'].includes(legacy.source) ? legacy.source : 'import';
+    state.sources[group] = { label: GROUP_LABEL[group], syncedAt: legacy.syncedAt, profile: legacy.profile, warnings: legacy.warnings,
+      items: [{ id: group === 'demo' ? 'demo:charge-6' : group, label: legacy.profile?.deviceName || GROUP_LABEL[group], device: detectDevice(legacy.profile?.deviceName) || 'charge-6', days: legacy.days }] };
+    await persistSources();
+    await idbDel('dataset');
+  }
+  if (Object.keys(state.sources).length) {
     if (!state.settings.onboarded) { state.settings.onboarded = true; lsSet('settings', state.settings); }
-    recompute(false);
+    rebuild(false);
   }
   render();
   await platform.hideSplash();
@@ -951,8 +1115,8 @@ document.addEventListener('keydown', (e) => {
     state.settings.onboarded = true;
     lsSet('settings', state.settings);
     await syncGoogle();
-  } else if (state.config.connected && isStale()) {
-    syncGoogle({ quiet: Boolean(state.dataset) });
+  } else if (canSync() && isStale()) {
+    syncAll({ quiet: Boolean(state.dataset) });
   }
-  platform.onResume(() => { if (state.config.connected && isStale() && !state.busy) syncGoogle({ quiet: true }); });
+  platform.onResume(() => { if (canSync() && isStale() && !state.busy) syncAll({ quiet: true }); });
 })();

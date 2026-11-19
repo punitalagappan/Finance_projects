@@ -68,5 +68,9 @@
 	<false/>
 	<key>UIUserInterfaceStyle</key>
 	<string>Dark</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Vitalspan reads heart rate, HRV, sleep, breathing, blood oxygen, wrist temperature, steps, workouts, VO₂ max and body composition from Apple Health to calculate your Recovery, Strain, Sleep and Body Age on this iPhone. Your data never leaves your device.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>Vitalspan does not write to Apple Health. This permission is never requested.</string>
 </dict>
 </plist>

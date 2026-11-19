@@ -23,6 +23,8 @@ function setKey(key, valueXml) {
 
 setKey('CFBundleDisplayName', `<string>${APP.name}</string>`);
 setKey('ITSAppUsesNonExemptEncryption', '<false/>');
+setKey('NSHealthShareUsageDescription', `<string>${APP.name} reads heart rate, HRV, sleep, breathing, blood oxygen, wrist temperature, steps, workouts, VO₂ max and body composition from Apple Health to calculate your Recovery, Strain, Sleep and Body Age on this iPhone. Your data never leaves your device.</string>`);
+setKey('NSHealthUpdateUsageDescription', `<string>${APP.name} does not write to Apple Health. This permission is never requested.</string>`);
 setKey('UIUserInterfaceStyle', '<string>Dark</string>');
 setKey('UIRequiredDeviceCapabilities', '<array>\n\t\t<string>arm64</string>\n\t</array>');
 setKey('UISupportedInterfaceOrientations', '<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t</array>');
@@ -30,7 +32,7 @@ const redirect = iosRedirect();
 if (redirect) {
   setKey('CFBundleURLTypes', `<array>\n\t\t<dict>\n\t\t\t<key>CFBundleURLName</key>\n\t\t\t<string>google-oauth</string>\n\t\t\t<key>CFBundleURLSchemes</key>\n\t\t\t<array>\n\t\t\t\t<string>${redirect.scheme}</string>\n\t\t\t</array>\n\t\t</dict>\n\t</array>`);
 } else {
-  console.warn('⚠ APP.googleIosClientId is empty: the build will have demo + import only (no Google sign-in).');
+  console.warn('⚠ APP.googleIosClientId is empty: Fitbit/Google sign-in is disabled in this build (Apple Health, import and demo still work).');
 }
 await fs.writeFile(plistPath, plist);
 
@@ -69,6 +71,20 @@ const privacy = `<?xml version="1.0" encoding="UTF-8"?>
 `;
 await fs.writeFile(path.join(appDir, 'PrivacyInfo.xcprivacy'), privacy);
 
+// ---------------------------------------------------------------- HealthKit entitlement (read-only)
+const entitlements = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.developer.healthkit</key>
+	<true/>
+	<key>com.apple.developer.healthkit.access</key>
+	<array/>
+</dict>
+</plist>
+`;
+await fs.writeFile(path.join(appDir, 'App.entitlements'), entitlements);
+
 // ---------------------------------------------------------------- project.pbxproj
 let pbx = await fs.readFile(pbxPath, 'utf8');
 const FILE_REF = 'A10000000000000000000001';
@@ -82,6 +98,17 @@ if (!pbx.includes(FILE_REF)) {
   pbx = pbx.replace(/(\n(\t+)50379B222058CBB4000EE86E \/\* capacitor\.config\.json \*\/,)/, `$1\n$2${FILE_REF} /* PrivacyInfo.xcprivacy */,`);
   pbx = pbx.replace(/(\n(\t+)50379B232058CBB4000EE86E \/\* capacitor\.config\.json in Resources \*\/,)/, `$1\n$2${BUILD_FILE} /* PrivacyInfo.xcprivacy in Resources */,`);
   if ((pbx.match(new RegExp(FILE_REF, 'g')) || []).length !== 3) throw new Error('Could not register PrivacyInfo.xcprivacy in project.pbxproj');
+}
+const ENT_REF = 'A10000000000000000000003';
+if (!pbx.includes(ENT_REF)) {
+  pbx = pbx.replace('/* Begin PBXFileReference section */\n',
+    `/* Begin PBXFileReference section */\n\t\t${ENT_REF} /* App.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = App.entitlements; sourceTree = "<group>"; };\n`);
+  pbx = pbx.replace(/(\n(\t+)A10000000000000000000001 \/\* PrivacyInfo\.xcprivacy \*\/,)/, `$1\n$2${ENT_REF} /* App.entitlements */,`);
+  pbx = pbx.replace(/(\t+)INFOPLIST_FILE = App\/Info\.plist;/g, '$1CODE_SIGN_ENTITLEMENTS = App/App.entitlements;\n$1INFOPLIST_FILE = App/Info.plist;');
+  pbx = pbx.replace(/(504EC3031FED79650016851F = \{\n(\t+)CreatedOnToolsVersion = 9\.2;)/, '$1\n$2SystemCapabilities = {\n$2\tcom.apple.HealthKit = {\n$2\t\tenabled = 1;\n$2\t};\n$2};');
+  if ((pbx.match(new RegExp(ENT_REF, 'g')) || []).length !== 2 || (pbx.match(/CODE_SIGN_ENTITLEMENTS/g) || []).length !== 2) {
+    throw new Error('Could not wire App.entitlements into project.pbxproj');
+  }
 }
 pbx = pbx
   .replace(/TARGETED_DEVICE_FAMILY = "1,2";/g, 'TARGETED_DEVICE_FAMILY = 1;')

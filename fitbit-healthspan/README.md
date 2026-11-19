@@ -1,6 +1,6 @@
 # Vitalspan: Recovery, Strain & Body Age for Fitbit
 
-An iPhone app (and web app) that turns Fitbit / Pixel Watch data into daily **Recovery, Strain, Sleep Need, Stress, Health Monitor, Journal** and a research-based **Body Age with Pace of Aging**. Everything runs on the device: no account, no backend, no tracking.
+An iPhone app (and web app) that turns data from **multiple wearables at once** (Fitbit / Pixel Watch via Google Health, plus Apple Watch, Oura, Garmin, Withings, Polar and others via Apple Health) into daily **Recovery, Strain, Sleep Need, Stress, Health Monitor, Journal** and a research-based **Body Age with Pace of Aging**. Everything runs on the device: no account, no backend, no tracking.
 
 > 📱 **Shipping to the App Store:** see [`RELEASE.md`](RELEASE.md). The iOS project (`ios/`), icon, screenshots, listing text, privacy policy and review notes (`store/`) are ready. What's left is signing in Xcode and Google's OAuth verification.
 
@@ -15,12 +15,22 @@ The research behind every formula is in two reports:
 ```bash
 cd fitbit-healthspan
 npm ci
-npm test             # 27 tests: scoring acceptance checks, Fitbit adaptation rules, App Store limits
+npm test             # 43 tests: scoring, device adaptation, multi-device merge, Apple Health parsing, App Store limits
 npm start            # builds www/ and serves the web version at http://localhost:8787
 npm run ios:sync && npm run ios:open   # iPhone app in Xcode (macOS)
 ```
 
-On first launch, onboarding asks for your consent, profile and tracker, then offers **Connect**, **Import** or **Try demo**. The demo has 210 days of realistic data, including a cold and some late nights.
+On first launch, onboarding asks for your consent and profile, then lets you connect **Fitbit/Pixel Watch**, **Apple Health**, a **Fitbit export**, or **Try demo**. The demo is two devices (a Fitbit Charge 6 and an Oura Ring) over 210 days.
+
+## Multiple devices
+Each connected source (Fitbit via Google, every app/device found in Apple Health, an import) becomes a device under **More → Devices & sources**. `engine/merge.js` combines them:
+- **Overnight vitals** (HRV, resting HR, breathing, SpO₂, skin temp): one device per metric, never mixed night-to-night. The default is the device with the best recent coverage, with rings and bands preferred. You can override it per metric.
+- **Sleep:** the primary device, with other devices filling the nights it missed (flagged).
+- **Heart rate:** the best-covered device, with gaps filled minute-by-minute from the others.
+- **Steps:** the highest daily count.
+- **Workouts:** de-duplicated by overlap.
+- **VO₂max:** measured estimates are preferred over demographic ones.
+- **Resting HR** is never re-derived from another device's heart rate.
 
 ## Three ways to get your data in
 
@@ -142,7 +152,8 @@ public/engine/          scoring engine (pure ES modules, shared by browser and t
   healthspan.js  recovery.js  strain.js  sleep.js  stress.js  monitor.js  journal.js  zones.js  index.js
   devices.js     per-device capability profiles, tiers, Fitbit↔WHOOP score map, adaptation notes
   confidence.js  per-score confidence flags (High / Medium / Low)
-public/adapters/        demo.js (synthetic data), takeout.js (export importer)
+  merge.js       multi-device merge with per-metric provenance
+public/adapters/        demo.js (synthetic, incl. two-device demo), takeout.js (export importer), healthkit.js (Apple Health)
 public/app.js, ui/      dashboard (vanilla JS + SVG charts)
 test/                   node:test suites (engine acceptance tests + adapter fixtures)
 ```

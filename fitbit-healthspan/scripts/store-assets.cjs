@@ -25,11 +25,12 @@ const ICON_SVG = (size) => `<svg xmlns="http://www.w3.org/2000/svg" width="${siz
 
 const CAPTIONS = [
   { file: '1-today', tab: 'today', title: 'Know how ready you are', sub: 'Recovery, Sleep and Strain every morning' },
-  { file: '2-body-age', tab: 'healthspan', title: 'Your Body Age', sub: 'Nine research-backed habits, plus your Pace of Aging' },
-  { file: '3-sleep', tab: 'sleep', title: 'Sleep need that adapts', sub: 'Personal sleep need, consistency and a bedtime planner' },
-  { file: '4-strain', tab: 'strain', title: 'Train at the right strain', sub: 'Heart-rate-reserve load on a 0–21 scale with a daily target', prev: 1 },
-  { file: '5-health', tab: 'health', title: "Spot when something's off", sub: 'Overnight vitals against your personal normal range' },
-  { file: '6-journal', tab: 'journal', title: 'See what moves your recovery', sub: 'Log habits and get personal impact insights' },
+  { file: '2-devices', tab: 'devices', title: 'All your devices, one score', sub: 'Fitbit, Pixel Watch and Apple Health devices merged per metric' },
+  { file: '3-body-age', tab: 'healthspan', title: 'Your Body Age', sub: 'Nine research-backed habits, plus your Pace of Aging' },
+  { file: '4-sleep', tab: 'sleep', title: 'Sleep need that adapts', sub: 'Personal sleep need, consistency and a bedtime planner' },
+  { file: '5-strain', tab: 'strain', title: 'Train at the right strain', sub: 'Heart-rate-reserve load on a 0–21 scale with a daily target', prev: 1 },
+  { file: '6-health', tab: 'health', title: "Spot when something's off", sub: 'Overnight vitals against your personal normal range' },
+  { file: '7-journal', tab: 'journal', title: 'See what moves your recovery', sub: 'Log habits and get personal impact insights' },
 ];
 
 (async () => {
@@ -47,17 +48,24 @@ const CAPTIONS = [
   // ---- raw app screenshots at 1320×2868
   const ctx = await browser.newContext({ viewport: { width: 440, height: 956 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
   await ctx.addInitScript(() => {
-    localStorage.setItem('settings', JSON.stringify({ age: 34, sex: 'male', device: 'charge-6', wakeTime: '07:00', onboarded: true, consent: true }));
+    localStorage.setItem('settings', JSON.stringify({ age: 34, sex: 'male', wakeTime: '07:00', onboarded: true, consent: true }));
   });
   const p = await ctx.newPage();
   await p.goto(BASE);
   await p.click('[data-action="demo"]');
-  await p.waitForTimeout(1200);
+  await p.waitForTimeout(1500);
   await p.addStyleTag({ content: '.toast{display:none!important}' });
   const raw = {};
   for (const c of CAPTIONS) {
     await p.click(`[data-tab="${c.tab}"] >> nth=0`, { force: true }).catch(async () => { await p.evaluate((t) => document.querySelector(`[data-tab="${t}"]`).click(), c.tab); });
-    if (c.prev) for (let i = 0; i < c.prev; i++) await p.click('[data-action="prev-day"]');
+    if (c.prev) {
+      // Step back to the most recent day with a logged workout so the Strain screen shows an activity.
+      for (let i = 0; i < 7; i++) {
+        await p.click('[data-action="prev-day"]');
+        await p.waitForTimeout(120);
+        if (await p.locator('#view .list li').count()) { c.prev = i + 1; break; }
+      }
+    }
     await p.evaluate(() => window.scrollTo(0, 0));
     await p.waitForTimeout(300);
     raw[c.file] = (await p.screenshot({ type: 'jpeg', quality: 92 })).toString('base64');

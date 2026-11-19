@@ -158,7 +158,7 @@ export function analyze(rawDays, profile, opts = {}) {
   // Sleeping RHR: 5th percentile of minute HR inside the main sleep (fallback: Fitbit daily RHR).
   for (const d of days) {
     d.sleepRhr = null;
-    if (d.sleep && d.sleep.start && d.sleep.end) {
+    if (d.sleep && d.sleep.start && d.sleep.end && !(d.rhrLocked && isNum(d.rhr))) {
       const hr = spanMinutes(byDate, 'hrMinutes', d.sleep.start, d.sleep.end).filter(isNum);
       if (hr.length >= 120) d.sleepRhr = percentile(hr, 0.05);
     }
@@ -168,7 +168,7 @@ export function analyze(rawDays, profile, opts = {}) {
       hrHours: d.hrMinutes ? d.hrMinutes.filter(isNum).length / 60 : 0,
       hrvSource: isNum(d.hrv) ? hrvSource : null,
       sleepStaged: d.sleep ? !d.sleep.classic : null,
-      rhrSource: d.sleep && isNum(d.sleepRhr) && d.sleepRhr !== d.rhr ? 'sleep-hr' : isNum(d.rhr) ? 'fitbit-daily' : null,
+      rhrSource: d.sleep && isNum(d.sleepRhr) && d.sleepRhr !== d.rhr ? 'sleep-hr' : isNum(d.rhr) ? 'device' : null,
     };
   }
 
@@ -323,4 +323,5 @@ export { healthMonitor, VITALS } from './monitor.js';
 export { sleepNeed } from './sleep.js';
 export { strainTarget } from './strain.js';
 export { DEVICES, WHOOP, SCORE_MAP, TIERS, detectDevice, deviceProfile, adaptationNotes } from './devices.js';
+export { mergeSources, overridableMetrics, METRIC_LABELS, coverage } from './merge.js';
 export { FLAG_INFO } from './confidence.js';

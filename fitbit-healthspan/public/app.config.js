@@ -3,7 +3,7 @@
 
 export const APP = {
   name: 'Vitalspan',
-  tagline: 'Recovery, Strain & Body Age for your Fitbit',
+  tagline: 'Recovery, Strain & Body Age from all your wearables',
   bundleId: 'com.vitalspan.app',
   version: '1.0.0',
 

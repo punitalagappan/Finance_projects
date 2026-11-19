@@ -16,6 +16,7 @@ import { SplashScreen } from '@capacitor/splash-screen';
 import { SecureStorage } from '@aparajita/capacitor-secure-storage';
 import * as gh from './lib/googleHealth.js';
 import { APP, iosRedirect } from './app.config.js';
+import { readHealthKit } from './adapters/healthkit.js';
 
 export const isNative = Capacitor.isNativePlatform();
 const TOKEN_KEY = 'google_tokens';
@@ -177,4 +178,15 @@ export async function scheduleReminders({ enabled, bedtime, wakeTime, needText }
   } catch (e) {
     console.warn('Could not schedule reminders', e);
   }
+}
+
+// ---------------------------------------------------------------- Apple Health (HealthKit, iOS only)
+export function healthKitSupported() {
+  return isNative && Capacitor.getPlatform() === 'ios';
+}
+
+/** Asks for read access (first time) and returns one source per app/device found in Apple Health. */
+export async function syncHealthKit({ days = 200, onStep } = {}) {
+  if (!healthKitSupported()) throw new Error('Apple Health is only available in the iPhone app.');
+  return readHealthKit({ days, onStep });
 }

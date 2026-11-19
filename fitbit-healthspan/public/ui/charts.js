@@ -36,7 +36,7 @@ export function gauge({ value, min, max, color, label, band, size = 220, decimal
     <path d="${arc(Math.PI, 0)}" fill="none" stroke="#262c34" stroke-width="14" stroke-linecap="round"/>
     ${band ? `<path d="${arc(angle(band[0]), angle(band[1]), r + 12)}" fill="none" stroke="${color}" stroke-opacity="0.35" stroke-width="4" stroke-linecap="round"/>` : ''}
     ${isNum(value) && value > min ? `<path d="${arc(Math.PI, angle(v))}" fill="none" stroke="${color}" stroke-width="14" stroke-linecap="round"/>` : ''}
-    <text x="${cx}" y="${cy - 18}" text-anchor="middle" fill="#e8edf2" font-size="${size * 0.2}" font-weight="800">${isNum(value) ? v.toFixed(decimals) : '–'}</text>
+    <text x="${cx}" y="${cy - 18}" text-anchor="middle" fill="#e8edf2" font-size="${size * 0.2}" font-weight="800">${isNum(value) ? (Math.abs(v) < 0.5 * 10 ** -decimals ? 0 : v).toFixed(decimals) : '–'}</text>
     <text x="4" y="${h}" fill="#8a96a3" font-size="11">${min}</text>
     <text x="${w - 4}" y="${h}" fill="#8a96a3" font-size="11" text-anchor="end">${max}</text>
   </svg>`;

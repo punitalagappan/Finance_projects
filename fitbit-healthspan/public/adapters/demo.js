@@ -141,3 +141,39 @@ export function generateDemo({ days = 210, end = toISODate(new Date()), seed = 7
   // the demo journal answers refer to the behaviour day; drop the last (today has no next morning yet)
   return { days: out, profile: DEMO_PROFILE, journal };
 }
+
+/**
+ * Multi-device demo: the same person wearing a Fitbit Charge 6 (via Google Health) and an Oura Ring
+ * (via Apple Health). The ring reports its own HRV scale and slightly different sleep timing; it has no
+ * minute heart rate in this demo, so Strain/Stress come from the Charge 6 while vitals come from the ring.
+ */
+export function generateDemoMulti(opts = {}) {
+  const base = generateDemo(opts);
+  const r = rng((opts.seed ?? 7) + 101);
+  const ringDays = base.days.map((d, i) => {
+    const out = { date: d.date, workouts: [], naps: [] };
+    if (i % 23 === 5) return out; // ring left on the charger some nights
+    if (d.sleep) {
+      const shift = Math.round(r.normal(0, 6));
+      const asleep = Math.max(200, d.sleep.asleepMin + Math.round(r.normal(8, 10)));
+      const deep = Math.round(asleep * 0.19);
+      const rem = Math.round(asleep * 0.23);
+      const sh = (iso, m) => { const t = new Date(iso); t.setMinutes(t.getMinutes() + m); return `${toISODate(t)}T${pad(t.getHours())}:${pad(t.getMinutes())}:00`; };
+      out.sleep = { start: sh(d.sleep.start, shift), end: sh(d.sleep.end, shift), asleepMin: asleep, inBedMin: d.sleep.inBedMin + 5, deepMin: deep, remMin: rem, lightMin: asleep - deep - rem, awakeMin: d.sleep.inBedMin + 5 - asleep };
+    }
+    if (isFinite(d.hrv)) out.hrv = Math.round(d.hrv * 1.32 * Math.exp(r.normal(0, 0.05)) * 10) / 10;
+    if (isFinite(d.rhr)) out.rhr = Math.round(d.rhr - 2 + r.normal(0, 0.8));
+    if (isFinite(d.respRate)) out.respRate = Math.round((d.respRate - 0.3 + r.normal(0, 0.2)) * 10) / 10;
+    if (isFinite(d.skinTempDelta)) out.skinTempDelta = Math.round((d.skinTempDelta + r.normal(0, 0.05)) * 100) / 100;
+    out.steps = Math.round(d.steps * 0.93);
+    return out;
+  });
+  return {
+    profile: base.profile,
+    journal: base.journal,
+    sources: [
+      { id: 'demo:charge-6', label: 'Fitbit Charge 6', device: 'charge-6', group: 'demo', days: base.days },
+      { id: 'demo:oura', label: 'Oura Ring (via Apple Health)', device: 'oura', group: 'demo', days: ringDays },
+    ],
+  };
+}

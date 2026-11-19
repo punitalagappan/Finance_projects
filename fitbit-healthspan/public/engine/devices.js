@@ -9,71 +9,120 @@
 
 export const DEVICES = {
   'fitbit-air': {
-    tier: 'C', name: 'Fitbit Air', family: 'fitbit', launch: '2026-05', display: false, price: '$99.99 (3 mo Premium incl.)',
+    form: 'band', hrvKind: 'rmssd', source: 'google', tier: 'C', name: 'Fitbit Air', family: 'fitbit', launch: '2026-05', display: false, price: '$99.99 (3 mo Premium incl.)',
     gps: false, spo2: true, skinTemp: 'device', eda: null, ecg: false, afibBackground: true, batteryDays: 7, multipath: false,
     vo2: 'demographic', verified: true,
     notes: 'Screenless band positioned against WHOOP. Readiness, Cardio Load and AZM did not populate at launch in one review (May 2026).',
   },
   'fitbit-edge': {
-    tier: 'B', name: 'Fitbit Edge', family: 'fitbit', launch: '2026-10', display: true, price: '$179.99',
+    form: 'band', hrvKind: 'rmssd', source: 'google', tier: 'B', name: 'Fitbit Edge', family: 'fitbit', launch: '2026-10', display: true, price: '$179.99',
     gps: true, spo2: true, skinTemp: 'dedicated', eda: null, ecg: true, afibBackground: true, batteryDays: 7, multipath: false,
     vo2: 'gps', verified: true,
     notes: 'Charge 6 successor with GPS (+Galileo), altimeter, ECG and a user-replaceable battery. No on-demand EDA scan.',
   },
   'charge-6': {
-    tier: 'B', name: 'Fitbit Charge 6', family: 'fitbit', launch: '2023-10', display: true, price: '$159',
+    form: 'band', hrvKind: 'rmssd', source: 'google', tier: 'B', name: 'Fitbit Charge 6', family: 'fitbit', launch: '2023-10', display: true, price: '$159',
     gps: true, spo2: true, skinTemp: 'variation', eda: 'scan', ecg: true, afibBackground: true, batteryDays: 7, multipath: false,
     vo2: 'gps', exerciseHrMape: 5.5, verified: true,
     notes: 'Exercise HR MAPE 5.5% (CCC 0.93) in a 2026 10-device study.',
   },
   'inspire-3': {
-    tier: 'C', name: 'Fitbit Inspire 3', family: 'fitbit', launch: '2022-09', display: true, price: '$99',
+    form: 'band', hrvKind: 'rmssd', source: 'google', tier: 'C', name: 'Fitbit Inspire 3', family: 'fitbit', launch: '2022-09', display: true, price: '$99',
     gps: false, spo2: true, skinTemp: 'variation', eda: null, ecg: false, afibBackground: true, batteryDays: 10, multipath: false,
     vo2: 'demographic', verified: false,
   },
   luxe: {
-    tier: 'C', name: 'Fitbit Luxe', family: 'fitbit', launch: '2021-04', display: true, price: 'discontinued?',
+    form: 'band', hrvKind: 'rmssd', source: 'google', tier: 'C', name: 'Fitbit Luxe', family: 'fitbit', launch: '2021-04', display: true, price: 'discontinued?',
     gps: false, spo2: true, skinTemp: 'variation', eda: null, ecg: false, afibBackground: true, batteryDays: 5, multipath: false,
     vo2: 'demographic', verified: false,
   },
   'versa-4': {
-    tier: 'B', name: 'Fitbit Versa 4', family: 'fitbit', launch: '2022-09', display: true, price: '$199',
+    form: 'watch', hrvKind: 'rmssd', source: 'google', tier: 'B', name: 'Fitbit Versa 4', family: 'fitbit', launch: '2022-09', display: true, price: '$199',
     gps: true, spo2: true, skinTemp: 'variation', eda: null, ecg: false, afibBackground: true, batteryDays: 6, multipath: false,
     vo2: 'gps', verified: false,
     notes: 'Only Fitbit with a published HRV validation: pilot (n=8) read ~8% higher than a Firstbeat ECG reference.',
   },
   'sense-2': {
-    tier: 'A', name: 'Fitbit Sense 2', family: 'fitbit', launch: '2022-09', display: true, price: '$249',
+    form: 'watch', hrvKind: 'rmssd', source: 'google', tier: 'A', name: 'Fitbit Sense 2', family: 'fitbit', launch: '2022-09', display: true, price: '$249',
     gps: true, spo2: true, skinTemp: 'dedicated', eda: 'continuous', ecg: true, afibBackground: true, batteryDays: 6, multipath: false,
     vo2: 'gps', sleepKappa: 0.42, verified: false,
     notes: 'Sleep staging vs PSG: κ 0.42 (Schyvens 2025, Fitbit Sense).',
   },
   'pixel-watch-2': {
-    tier: 'A', name: 'Pixel Watch 2', family: 'pixel', launch: '2023-10', display: true, price: '—',
+    form: 'watch', hrvKind: 'rmssd', source: 'google', tier: 'A', name: 'Pixel Watch 2', family: 'pixel', launch: '2023-10', display: true, price: '—',
     gps: true, spo2: true, skinTemp: 'dedicated', eda: 'continuous', ecg: true, afibBackground: true, batteryDays: 1, multipath: true,
     vo2: 'gps', exerciseHrMape: 6.7, verified: true,
     notes: 'First multipath PPG + on-device deep-learning HR. Exercise HR MAPE 6.7% (2026 study). ~24 h battery: charge outside sleep.',
   },
   'pixel-watch-3': {
-    tier: 'A', name: 'Pixel Watch 3', family: 'pixel', launch: '2024-08', display: true, price: '—',
+    form: 'watch', hrvKind: 'rmssd', source: 'google', tier: 'A', name: 'Pixel Watch 3', family: 'pixel', launch: '2024-08', display: true, price: '—',
     gps: true, spo2: true, skinTemp: 'dedicated', eda: 'continuous', ecg: true, afibBackground: true, batteryDays: 1, multipath: true,
     vo2: 'gps', exerciseHrMape: 2.73, verified: true,
     notes: 'Exercise HR MAPE 2.73% (bias −2.4 bpm). Cardio Load on-device. Loss of Pulse (some regions).',
   },
   'pixel-watch-4': {
-    tier: 'A', name: 'Pixel Watch 4', family: 'pixel', launch: '2025-08', display: true, price: '—',
+    form: 'watch', hrvKind: 'rmssd', source: 'google', tier: 'A', name: 'Pixel Watch 4', family: 'pixel', launch: '2025-08', display: true, price: '—',
     gps: true, spo2: true, skinTemp: 'dedicated', eda: 'continuous', ecg: true, afibBackground: true, batteryDays: 1.5, multipath: true,
     vo2: 'gps', verified: true,
     notes: 'Far-field skin-temperature sensor; 30-40 h battery.',
   },
   'pixel-watch-5': {
-    tier: 'A', name: 'Pixel Watch 5', family: 'pixel', launch: '2026-08', display: true, price: '—',
+    form: 'watch', hrvKind: 'rmssd', source: 'google', tier: 'A', name: 'Pixel Watch 5', family: 'pixel', launch: '2026-08', display: true, price: '—',
     gps: true, spo2: true, skinTemp: 'dedicated', eda: 'continuous', ecg: true, afibBackground: true, batteryDays: 1.5, multipath: true,
     vo2: 'gps', verified: true,
     notes: 'Adds cuffless Blood Pressure Trends and Insulin Resistance Trends (reports from Oct 2026; not in the Google Health API data types).',
   },
+
+  // ---- Devices that sync into Apple Health (read via HealthKit). HRV in Apple Health is stored in the
+  // "HRV (SDNN)" type; Apple Watch measures SDNN, while some apps write their own RMSSD values there.
+  // Baselines are per device, so either works for Recovery, but values are not comparable across devices.
+  'apple-watch': {
+    form: 'watch', hrvKind: 'sdnn', source: 'healthkit', tier: 'A', name: 'Apple Watch', family: 'apple', launch: '', display: true, price: '',
+    gps: true, spo2: true, skinTemp: 'dedicated', eda: null, ecg: true, afibBackground: true, batteryDays: 1.5, multipath: false,
+    vo2: 'gps', verified: false,
+    notes: 'HRV is SDNN from short readings spread through the night. Sleeping wrist temperature on Series 8+/Ultra. Cardio Fitness (VO₂max) comes from outdoor walks, runs and hikes with GPS.',
+  },
+  oura: {
+    form: 'ring', hrvKind: 'rmssd', source: 'healthkit', tier: 'B', name: 'Oura Ring', family: 'oura', launch: '', display: false, price: '',
+    gps: false, spo2: true, skinTemp: 'dedicated', eda: null, ecg: false, afibBackground: false, batteryDays: 6, multipath: false,
+    vo2: 'demographic', verified: false,
+    notes: 'Ring sensor at the finger; strong overnight signals. Shares sleep, heart rate and HRV with Apple Health. Its VO₂max (Cardio Capacity) is an estimate, so it is left out of Body Age.',
+  },
+  whoop: {
+    form: 'band', hrvKind: 'rmssd', source: 'healthkit', tier: 'B', name: 'WHOOP', family: 'whoop', launch: '', display: false, price: '',
+    gps: false, spo2: true, skinTemp: 'dedicated', eda: null, ecg: false, afibBackground: false, batteryDays: 14, multipath: false,
+    vo2: 'demographic', verified: false,
+    notes: 'Screenless band with continuous PPG. Can share sleep, heart rate, HRV and workouts with Apple Health.',
+  },
+  garmin: {
+    form: 'watch', hrvKind: 'rmssd', source: 'healthkit', tier: 'B', name: 'Garmin', family: 'garmin', launch: '', display: true, price: '',
+    gps: true, spo2: true, skinTemp: 'variation', eda: null, ecg: false, afibBackground: false, batteryDays: 7, multipath: false,
+    vo2: 'gps', verified: false,
+    notes: 'Garmin Connect shares heart rate, sleep, steps and workouts with Apple Health; which metrics appear depends on your Connect settings.',
+  },
+  'ultrahuman': {
+    form: 'ring', hrvKind: 'rmssd', source: 'healthkit', tier: 'B', name: 'Ultrahuman Ring', family: 'ultrahuman', launch: '', display: false, price: '',
+    gps: false, spo2: true, skinTemp: 'dedicated', eda: null, ecg: false, afibBackground: false, batteryDays: 5, multipath: false,
+    vo2: 'demographic', verified: false,
+  },
+  polar: {
+    form: 'watch', hrvKind: 'rmssd', source: 'healthkit', tier: 'B', name: 'Polar', family: 'polar', launch: '', display: true, price: '',
+    gps: true, spo2: false, skinTemp: null, eda: null, ecg: false, afibBackground: false, batteryDays: 7, multipath: false,
+    vo2: 'gps', verified: false,
+  },
+  withings: {
+    form: 'scale', hrvKind: 'rmssd', source: 'healthkit', tier: 'C', name: 'Withings', family: 'withings', launch: '', display: true, price: '',
+    gps: false, spo2: false, skinTemp: null, eda: null, ecg: false, afibBackground: false, batteryDays: 30, multipath: false,
+    vo2: 'demographic', verified: false,
+    notes: 'Smart scales provide body-fat % (lean mass for Body Age); sleep mats/watches can add sleep and heart rate.',
+  },
+  iphone: {
+    form: 'phone', hrvKind: null, source: 'healthkit', tier: 'C', name: 'iPhone', family: 'apple', launch: '', display: true, price: '',
+    gps: true, spo2: false, skinTemp: null, eda: null, ecg: false, afibBackground: false, batteryDays: 1, multipath: false,
+    vo2: 'demographic', verified: true, notes: 'Steps and walking data only.',
+  },
   other: {
-    tier: 'B', name: 'Other / unknown Fitbit', family: 'fitbit', launch: '', display: true, price: '',
+    form: 'band', hrvKind: 'rmssd', source: 'google', tier: 'B', name: 'Other / unknown Fitbit', family: 'fitbit', launch: '', display: true, price: '',
     gps: true, spo2: true, skinTemp: 'variation', eda: null, ecg: false, afibBackground: false, batteryDays: 5, multipath: false,
     vo2: 'demographic', verified: false,
   },
@@ -89,9 +138,17 @@ export const WHOOP = {
 };
 
 /** Guess the device profile from a Google Health pairedDevices `deviceVersion` (or any device name). */
-export function detectDevice(name) {
+export function detectDevice(name, deviceType) {
   const s = String(name || '').toLowerCase();
-  if (!s) return null;
+  if (!s && !deviceType) return null;
+  if (/oura/.test(s)) return 'oura';
+  if (/whoop/.test(s)) return 'whoop';
+  if (/garmin|^connect$/.test(s)) return 'garmin';
+  if (/ultrahuman/.test(s)) return 'ultrahuman';
+  if (/polar/.test(s)) return 'polar';
+  if (/withings|health mate/.test(s)) return 'withings';
+  if (/apple watch/.test(s) || (deviceType === 'watch' && /apple|^$/.test(s))) return 'apple-watch';
+  if (/iphone/.test(s) || deviceType === 'phone') return 'iphone';
   if (/pixel.*watch.*5|pw ?5/.test(s)) return 'pixel-watch-5';
   if (/pixel.*watch.*4/.test(s)) return 'pixel-watch-4';
   if (/pixel.*watch.*3/.test(s)) return 'pixel-watch-3';
@@ -120,6 +177,7 @@ export const TIERS = {
  */
 export function adaptationNotes(id) {
   const d = deviceProfile(id);
+  if (d.source === 'healthkit') return healthKitNotes(d);
   const notes = [
     { area: 'HRV', rule: 'Uses Fitbit deep-sleep RMSSD (closest to WHOOP\'s slow-wave-weighted HRV), falling back to whole-night RMSSD for the entire series when deep values are missing on >20% of nights; the two are never mixed. Recovery compares HRV only with your own 30-night baseline (z-score), so the device offset cancels out.' },
     { area: 'Resting HR', rule: 'WHOOP measures RHR during sleep; Fitbit\'s daily RHR also uses awake data. When minute heart rate is available we use the 5th percentile of HR during your main sleep instead, so Body Age\'s 60/64 bpm targets mean the same thing.' },
@@ -162,3 +220,23 @@ export const SCORE_MAP = [
   { fitbit: 'Health Metrics dashboard (HRV, RHR, breathing, SpO₂, skin temp ranges)', whoop: 'Health Monitor', diff: 'Equivalent idea.' },
   { fitbit: 'Google Health Coach (Gemini, Premium $9.99/mo or ~$99.99/yr)', whoop: 'WHOOP Coach (included in membership)', diff: 'Both are AI coaches. Fitbit hardware is a one-off purchase plus optional Premium; WHOOP is subscription-only with hardware included.' },
 ];
+
+function healthKitNotes(d) {
+  const notes = [
+    { area: 'Source', rule: `${d.name} data is read from Apple Health (read-only). Each app or device that writes to Apple Health is treated as its own source, so its values are never blended with another device's.` },
+    { area: 'HRV', rule: d.hrvKind === 'sdnn'
+      ? 'Apple Health stores HRV as SDNN, which Apple Watch measures in short readings during the night. SDNN and RMSSD aren\'t interchangeable, so Recovery compares it only with your own 30-night baseline from this device.'
+      : `${d.name} writes its own overnight HRV into Apple Health. It's compared only with your own baseline from this device, so device differences cancel out.` },
+    { area: 'Resting HR', rule: 'When minute heart rate covers your sleep, resting HR is the 5th percentile of HR while asleep (a sleep-measured value). Otherwise the resting HR from Apple Health is used.' },
+    { area: 'Sampling', rule: d.form === 'watch'
+      ? 'Watches usually sample heart rate every few minutes at rest and continuously during workouts. Gaps up to 5 min are bridged and longer gaps count as not worn, so Strain on rest days can read a little low.'
+      : 'Heart-rate sampling frequency depends on the device and its settings. Gaps up to 5 min are bridged and longer gaps count as not worn.' },
+    { area: 'Zones', rule: 'Zone minutes are recomputed from raw heart rate using heart-rate reserve and counted only inside logged workouts for Body Age.' },
+    { area: 'VO₂max', rule: d.vo2 === 'gps'
+      ? `${d.name} estimates VO₂max from GPS-tracked outdoor activity, so it counts toward Body Age.`
+      : `${d.name}'s VO₂max is a model estimate rather than a GPS/run-based measurement, so it's left out of Body Age to avoid double-counting resting HR and age.` },
+    { area: 'Multiple devices', rule: 'If several devices record the same metric, Vitalspan uses the one with the best recent coverage (rings and bands are preferred overnight). You can choose the source for each metric under Devices & sources.' },
+  ];
+  if (d.batteryDays <= 1.5) notes.push({ area: 'Battery', rule: `${d.name} needs daily charging. Charge it outside sleep so nights aren't missed.` });
+  return notes;
+}
